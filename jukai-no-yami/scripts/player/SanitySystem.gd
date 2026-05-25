@@ -66,7 +66,7 @@ func _update_drain(delta: float) -> void:
 
 	if sanity <= 0.0 and GameManager.player_ref:
 		GameManager.player_ref.die()
-	elif sanity <= 20.0 and not _critical_emitted:
+	elif sanity <= 35.0 and not _critical_emitted:
 		_critical_emitted = true
 		sanity_critical.emit()
 
@@ -78,11 +78,11 @@ func drain(amount: float) -> void:
 
 func restore(amount: float) -> void:
 	sanity = min(MAX_SANITY, sanity + amount)
-	_critical_emitted = sanity <= 20.0
+	_critical_emitted = sanity <= 35.0
 	sanity_updated.emit(sanity)
 
-func set_ghost_visible(visible: bool) -> void:
-	is_seeing_ghost = visible
+func set_ghost_visible(is_visible: bool) -> void:
+	is_seeing_ghost = is_visible
 
 # ─── Visual Effects ───────────────────────────────────────────────────────────
 

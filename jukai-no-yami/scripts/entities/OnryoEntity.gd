@@ -42,11 +42,20 @@ func _ready() -> void:
 
 	visible = false
 	set_physics_process(false)
-	if spawn_on_sanity and GameManager.sanity_ref:
-		GameManager.sanity_ref.sanity_critical.connect(_on_sanity_critical)
+	# Sanity-critical spawning used to be wired via a signal connection here,
+	# but levels add the Onryo before the Player exists, so sanity_ref is
+	# null in _ready and the connection silently failed — Onryo_Sanity never
+	# fired. Use a poll in _process instead; it doesn't care about init order.
 
-func _on_sanity_critical() -> void:
-	if not _spawned:
+func _process(_delta: float) -> void:
+	if _spawned or not spawn_on_sanity:
+		return
+	if GameManager.state != GameManager.GameState.PLAYING:
+		return
+	if not GameManager.sanity_ref or not GameManager.player_ref:
+		return
+	# README documents this as the 35% threshold.
+	if GameManager.sanity_ref.sanity <= 35.0:
 		_spawned = true
 		spawn_behind_player()
 

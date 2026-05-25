@@ -29,15 +29,17 @@ func _start_tension_controller() -> void:
 	add_child(tc)
 
 func _spawn_stalker(spawn_pos: Vector3, activation_sanity: float = 60.0) -> CharacterBody3D:
+	# set_script attaches the script and initializes exports synchronously, so
+	# we can assign the threshold before add_child — that way _ready already
+	# sees the per-level value (and we keep this function synchronous; awaiting
+	# made the -> CharacterBody3D return value useless to callers).
 	var s = CharacterBody3D.new()
 	s.name = "StalkerAI"
 	s.set_script(preload("res://scripts/entities/StalkerAI.gd"))
 	s.position = spawn_pos
-	add_child(s)
-	# Set sanity threshold after _ready() has run
-	await get_tree().process_frame
 	if "activation_sanity" in s:
 		s.activation_sanity = activation_sanity
+	add_child(s)
 	return s
 
 func _make_path(center: Vector3, length: float, width: float = 4.5) -> void:

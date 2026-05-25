@@ -86,7 +86,12 @@ func _build_loading_overlay() -> void:
 	add_child(_loading_overlay)
 
 func _process(_delta: float) -> void:
-	if state != GameState.PLAYING or not player_ref:
+	if state != GameState.PLAYING:
+		return
+	# During scene transitions player_ref can point at a freed CharacterBody3D
+	# (the autoload outlives levels). is_instance_valid catches the dangle
+	# before we touch global_position and crash.
+	if not is_instance_valid(player_ref):
 		return
 	var py = player_ref.global_position.y
 	if py > 0.3 and player_ref.is_on_floor():
