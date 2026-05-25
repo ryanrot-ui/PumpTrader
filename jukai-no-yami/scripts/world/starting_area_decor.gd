@@ -24,11 +24,13 @@ extends Node3D
 @export var wheel_width: float = 0.20
 @export var yaw_deg: float = 0.0
 
-# Materials (assigned procedurally in _ready)
-var _body_mat: StandardMaterial3D
-var _wheel_mat: StandardMaterial3D
-var _light_mat: StandardMaterial3D
-var _window_mat: StandardMaterial3D
+# Materials (assigned procedurally in _ready). Typed as base Material so
+# the body / light slots can hold either ShaderMaterial (cell-shaded car)
+# or StandardMaterial3D depending on the implementation.
+var _body_mat: Material
+var _wheel_mat: Material
+var _light_mat: Material
+var _window_mat: Material
 
 func _ready() -> void:
 	rotation_degrees.y = yaw_deg
@@ -42,29 +44,39 @@ func _ready() -> void:
 	call_deferred("_snap_chassis_to_ground")
 
 func _make_materials() -> void:
-	# Body — flat dark slate grey, slightly desaturated, no metalness so
-	# it doesn't catch ambient and blow out under bloom.
-	_body_mat = StandardMaterial3D.new()
-	_body_mat.albedo_color = Color(0.18, 0.18, 0.20)
-	_body_mat.roughness = 0.85
-	_body_mat.metallic = 0.0
-	_body_mat.metallic_specular = 0.10
+	# Body — cell-shaded dark ash grey. The new cell_car shader locks the
+	# faces into discrete shade bands instead of smooth gradients, giving
+	# the stylised flat look the design brief asks for. Same shader is
+	# reused (with emit_amount > 0) for the taillights below.
+	var car_shader: Shader = load("res://shaders/cell_car.gdshader")
 
-	# Wheels — near-black rubber
+	var body_shader_mat := ShaderMaterial.new()
+	body_shader_mat.shader = car_shader
+	body_shader_mat.set_shader_parameter("body_color", Color(0.20, 0.20, 0.22, 1.0))
+	body_shader_mat.set_shader_parameter("shadow_color", Color(0.05, 0.05, 0.06, 1.0))
+	body_shader_mat.set_shader_parameter("band_count", 3)
+	body_shader_mat.set_shader_parameter("emit_amount", 0.0)
+	_body_mat = body_shader_mat
+
+	# Wheels — near-black rubber (StandardMaterial3D, simple and matte)
 	_wheel_mat = StandardMaterial3D.new()
 	_wheel_mat.albedo_color = Color(0.05, 0.05, 0.05)
 	_wheel_mat.roughness = 0.96
 	_wheel_mat.metallic = 0.0
 
-	# Taillights — neon crimson, intensely emissive but small
-	_light_mat = StandardMaterial3D.new()
-	_light_mat.albedo_color = Color(0.55, 0.04, 0.04)
-	_light_mat.emission_enabled = true
-	_light_mat.emission = Color(0.95, 0.08, 0.06)
-	_light_mat.emission_energy_multiplier = 0.55
-	_light_mat.roughness = 0.25
+	# Taillights — same cell shader with emit_amount cranked. Output is
+	# flat neon crimson, no PBR specular highlights, ready to bloom.
+	var light_shader_mat := ShaderMaterial.new()
+	light_shader_mat.shader = car_shader
+	light_shader_mat.set_shader_parameter("body_color", Color(0.55, 0.04, 0.04, 1.0))
+	light_shader_mat.set_shader_parameter("shadow_color", Color(0.42, 0.02, 0.02, 1.0))
+	light_shader_mat.set_shader_parameter("band_count", 2)
+	light_shader_mat.set_shader_parameter("emit_color", Color(0.95, 0.08, 0.06, 1.0))
+	light_shader_mat.set_shader_parameter("emit_amount", 1.0)
+	_light_mat = light_shader_mat
 
-	# Windows — almost-black tinted glass
+	# Windows — almost-black tinted glass (StandardMaterial3D keeps the
+	# slight reflective sheen that makes the windscreen read as glass).
 	_window_mat = StandardMaterial3D.new()
 	_window_mat.albedo_color = Color(0.04, 0.05, 0.07)
 	_window_mat.roughness = 0.18

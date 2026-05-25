@@ -318,15 +318,17 @@ func _spawn_sign(pos: Vector3, yaw_deg: float = 0.0) -> void:
 	board_m.size = Vector3(1.30, 0.70, 0.05)
 	var board_mi := MeshInstance3D.new()
 	board_mi.mesh = board_m
-	# Weathered dark wood — was much brighter (0.55, 0.42, 0.22) which read
-	# as a "backlit billboard" under the lot lights in playtest screenshots.
-	# Now: stained, almost-black timber that absorbs the lot light instead
-	# of glowing under it. The painted text reads ABOVE the wood, not as
-	# white-and-orange illumination.
-	var board_mat := StandardMaterial3D.new()
-	board_mat.albedo_color = Color(0.18, 0.13, 0.08)
-	board_mat.roughness = 0.98
-	board_mat.metallic_specular = 0.02
+	# Weathered wood — procedural shader with vertical grain lines and
+	# random decay streaks. Replaces the flat StandardMaterial3D so the
+	# board reads as warped outdoor lumber even at point-blank distance.
+	var board_mat := ShaderMaterial.new()
+	board_mat.shader = load("res://shaders/weathered_wood.gdshader")
+	board_mat.set_shader_parameter("wood_base", Color(0.20, 0.14, 0.08, 1.0))
+	board_mat.set_shader_parameter("wood_dark", Color(0.04, 0.03, 0.02, 1.0))
+	board_mat.set_shader_parameter("wood_stain", Color(0.32, 0.10, 0.04, 1.0))
+	board_mat.set_shader_parameter("grain_freq", 36.0)
+	board_mat.set_shader_parameter("grain_depth", 0.55)
+	board_mat.set_shader_parameter("stain_amount", 0.25)
 	board_mi.material_override = board_mat
 	board_mi.position = Vector3(0, 2.15, 0)
 	sign_body.add_child(board_mi)
