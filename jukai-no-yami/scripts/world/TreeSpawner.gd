@@ -96,9 +96,13 @@ func _ready() -> void:
 		mm.set_instance_transform(i, transforms[i])
 
 	mmi.multimesh = mm
-	mmi.visibility_range_end        = 58.0
-	mmi.visibility_range_end_margin = 8.0
-	mmi.visibility_range_fade_mode  = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
+	# Visibility was capped at 58 m — that's why playtest screenshots show
+	# the path "ending" in pitch black: trees past 58 m got culled. Push it
+	# out so the player sees a continuous wall of silhouettes down the path,
+	# and use FADE_SELF so the cull edge softens instead of popping.
+	mmi.visibility_range_end        = 140.0
+	mmi.visibility_range_end_margin = 24.0
+	mmi.visibility_range_fade_mode  = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON \
 		if GameManager.use_tree_shadows() \
 		else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -143,14 +147,18 @@ func _make_tree_mesh() -> ArrayMesh:
 	st.commit(am)
 	am.surface_set_material(0, _bark_mat)
 
-	# ── Surface 1: Dark canopy masses (few billboards = less minecraft look) ───
+	# ── Surface 1: Solid canopy blobs ─────────────────────────────────────────
+	# Was crossed billboard planes — the alpha-discard in the foliage
+	# shader created the "paper cutout" look in playtest screenshots when
+	# you looked up at the canopy. Replaced with solid icosahedral blobs
+	# (flattened SphereMesh slices) so the canopy reads as proper 3D mass.
 	var sf = SurfaceTool.new()
 	sf.begin(Mesh.PRIMITIVE_TRIANGLES)
 
-	_add_leaf_cluster(sf, Vector3(0.0, 8.6, 0.0), 1.15, 1.45)
-	_add_leaf_cluster(sf, Vector3(0.12, 7.9, 0.1), 0.95, 1.2)
-	_add_leaf_cluster(sf, Vector3(-0.14, 8.0, -0.08), 0.9, 1.15)
-	_add_leaf_cluster(sf, Vector3(0.05, 7.2, 0.0), 0.78, 1.0)
+	_add_canopy_blob(sf, Vector3( 0.00, 8.4,  0.00), 1.45, 0.78)
+	_add_canopy_blob(sf, Vector3( 0.45, 7.6,  0.30), 1.10, 0.62)
+	_add_canopy_blob(sf, Vector3(-0.50, 7.7, -0.35), 1.05, 0.60)
+	_add_canopy_blob(sf, Vector3( 0.10, 6.9,  0.00), 0.85, 0.50)
 
 	sf.commit(am)
 	am.surface_set_material(1, _foliage_mat)
@@ -225,6 +233,10 @@ func _add_root_fin(st: SurfaceTool, dir: Vector3) -> void:
 # plane is visible from the full 360°. The noise mask in the shader punches
 # organic leaf silhouettes through each plane.
 func _add_leaf_cluster(sf: SurfaceTool, center: Vector3, radius: float, height: float) -> void:
+	# Legacy crossed-billboard cluster — no longer used (replaced by
+	# _add_canopy_blob below) but kept as a reference. Calling code uses
+	# the blob version which renders as solid 3D mass instead of the
+	# alpha-discard "paper cutout" look that showed up in playtests.
 	for i in 2:
 		var angle = float(i) / 2.0 * PI
 		var right = Vector3(cos(angle), 0.0, sin(angle)) * radius
@@ -238,3 +250,41 @@ func _add_leaf_cluster(sf: SurfaceTool, center: Vector3, radius: float, height: 
 		sf.set_normal(n)
 		sf.add_vertex(bl); sf.add_vertex(br); sf.add_vertex(v_top_r)
 		sf.add_vertex(bl); sf.add_vertex(v_top_r); sf.add_vertex(v_top_l)
+
+
+# Solid canopy blob — a flattened icosphere built by stacked latitude rings.
+# Reads as a proper 3D dark silhouette mass from any angle, no alpha discard,
+# no flat 2D edges. Squish ratio < 1.0 flattens it horizontally so the
+# canopy looks like layered foliage instead of a perfect sphere.
+func _add_canopy_blob(sf: SurfaceTool, center: Vector3, radius: float, squish: float) -> void:
+	var rings: int = 6
+	var segments: int = 10
+	# Pre-compute ring points
+	var ring_points: Array = []
+	for r in range(rings + 1):
+		var phi: float = float(r) / float(rings) * PI
+		var y: float = cos(phi) * radius * squish
+		var ring_r: float = sin(phi) * radius
+		var row: Array = []
+		for s in range(segments + 1):
+			var theta: float = float(s) / float(segments) * TAU
+			var x: float = cos(theta) * ring_r
+			var z: float = sin(theta) * ring_r
+			# Slight per-vertex bumpiness so the blob isn't a perfect sphere
+			var jitter: float = sin(theta * 5.0 + phi * 3.0) * 0.08 * radius
+			row.append(Vector3(x + jitter * cos(theta), y, z + jitter * sin(theta)))
+		ring_points.append(row)
+	# Build triangle faces between rings — solid surface, smooth normals.
+	for r in range(rings):
+		for s in range(segments):
+			var p00: Vector3 = ring_points[r][s] + center
+			var p01: Vector3 = ring_points[r][s + 1] + center
+			var p10: Vector3 = ring_points[r + 1][s] + center
+			var p11: Vector3 = ring_points[r + 1][s + 1] + center
+			# Two triangles per quad — outward normals via cross product
+			var n0: Vector3 = ((p10 - p00).cross(p01 - p00)).normalized()
+			var n1: Vector3 = ((p11 - p01).cross(p10 - p01)).normalized()
+			sf.set_normal(n0)
+			sf.add_vertex(p00); sf.add_vertex(p10); sf.add_vertex(p01)
+			sf.set_normal(n1)
+			sf.add_vertex(p01); sf.add_vertex(p10); sf.add_vertex(p11)

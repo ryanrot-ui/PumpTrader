@@ -185,9 +185,12 @@ func _spawn_path_markers(level_root: Node3D, center: Vector3) -> void:
 
 func _make_path_mesh(parent: Node3D, center: Vector3, length: float, width: float) -> void:
 	# Path is a VISUAL overlay only. The forest floor under it provides
-	# collision at y=0, so the player walks on a continuous surface instead
-	# of stepping up onto a 7 cm raised box. A thin mesh sitting 2-4 cm
-	# above the floor reads clearly without creating a tripping edge.
+	# collision at y=0, so the player walks on a continuous surface.
+	#
+	# Trail mesh is extended 28 m PAST the gameplay length on the far side
+	# (south end, z direction) so the player never sees the path "end" in
+	# a void when they approach the exit trigger. The extension uses a
+	# darker, tapered material that visually fades into the forest floor.
 	var mi := MeshInstance3D.new()
 	mi.name = "GuidedTrailPath"
 	mi.position = Vector3(center.x, center.y + 0.02, center.z)
@@ -203,6 +206,31 @@ func _make_path_mesh(parent: Node3D, center: Vector3, length: float, width: floa
 	mi.material_override = mat
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(mi)
+
+	# ── Tapered tail extension ─────────────────────────────────────────────
+	# A 28 m strip of darker dirt continuing past the gameplay length on
+	# the SOUTH side (the direction the player walks toward). Hides the
+	# "path ends in pitch black" effect when approaching the exit trigger.
+	# Material is no-emission, slightly darker, so it fades into the
+	# forest floor naturally as the player's flashlight loses range.
+	var tail_length := 28.0
+	var tail := MeshInstance3D.new()
+	tail.name = "GuidedTrailPath_Tail"
+	# Place it just past the main path on the -Z side
+	tail.position = Vector3(
+		center.x,
+		center.y + 0.018,
+		center.z - length * 0.5 - tail_length * 0.5)
+	var tail_bm := BoxMesh.new()
+	tail_bm.size = Vector3(width * 0.96, 0.04, tail_length)
+	tail.mesh = tail_bm
+	var tail_mat := StandardMaterial3D.new()
+	tail_mat.albedo_color = Color(0.28, 0.22, 0.14)
+	tail_mat.roughness = 0.98
+	tail_mat.metallic_specular = 0.02
+	tail.material_override = tail_mat
+	tail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(tail)
 
 
 func _spawn_breadcrumb_lights(level_root: Node3D, center: Vector3, length: float, hw: float) -> void:
