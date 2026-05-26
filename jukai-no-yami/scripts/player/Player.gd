@@ -97,6 +97,17 @@ func _ready() -> void:
 	hand_pivot.add_child(fl)
 	flashlight = fl
 
+	# Volumetric cone overlay — sits over the SpotLight3D, renders the
+	# swirling-dust beam via flashlight_volumetric_vol.gdshader. We use a
+	# CylinderMesh with top_radius=0 (i.e. a cone) so the UVs come out
+	# along-axis instead of the weird PrismMesh / ConeMesh defaults.
+	#
+	# Math for sizing: cone length = a visible portion of spot_range
+	# (12 m — fog wouldn't realistically be lit much past that), and
+	# cone base radius = tan(spot_angle) * length. spot_angle is the
+	# HALF-angle in Godot SpotLight3D, so the radius math is direct.
+	_build_volumetric_cone(fl, 12.0, 28.0)
+
 	ray = RayCast3D.new()
 	ray.name = "InteractRay"
 	ray.target_position = Vector3(0, 0, -INTERACT_DIST)
@@ -136,6 +147,47 @@ func _make_flashlight_cookie() -> ImageTexture:
 			var val = clamp(base + ring + streak, 0.0, 1.0)
 			img.set_pixel(x, y, Color(val, val, val))
 	return ImageTexture.create_from_image(img)
+
+
+# Adds a semi-transparent dust-cone overlay on top of the SpotLight3D so the
+# flashlight reads as "light scattering through air" instead of a clinical
+# circle on the ground.
+#
+# length      — cone height in metres (visible portion of the beam)
+# half_angle  — degrees; must match the SpotLight3D's spot_angle (which IS
+#               the half-angle in Godot 4) so the cone walls line up with
+#               the actual light cone.
+func _build_volumetric_cone(parent: SpotLight3D, length: float, half_angle: float) -> void:
+	var cone := MeshInstance3D.new()
+	cone.name = "VolumetricBeam"
+	var cm := CylinderMesh.new()
+	# CylinderMesh with top_radius=0 produces a cone. Top is at +Y, bottom
+	# is at -Y in mesh-local space; we rotate -90° on X so the cone's
+	# point ends up at the lens (+Y → -Z) and its base extends forward.
+	cm.top_radius = 0.0
+	cm.bottom_radius = tan(deg_to_rad(half_angle)) * length
+	cm.height = length
+	cm.radial_segments = 24
+	cm.rings = 1
+	cone.mesh = cm
+	# Pivot the cone so the TIP sits at the lens (parent position) and the
+	# BASE extends forward (-Z). After -90° X rotation, the mesh's +Y axis
+	# points to -Z, so we shift the cone forward by length/2.
+	cone.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
+	cone.position = Vector3(0.0, 0.0, -length * 0.5)
+	# Volumetric beam material
+	var beam_mat := ShaderMaterial.new()
+	beam_mat.shader = load("res://shaders/flashlight_volumetric_vol.gdshader")
+	beam_mat.set_shader_parameter("beam_color", Color(0.92, 0.85, 0.70, 1.0))
+	beam_mat.set_shader_parameter("density", 0.28)
+	beam_mat.set_shader_parameter("dust_speed", 0.45)
+	beam_mat.set_shader_parameter("dust_scale", 14.0)
+	beam_mat.set_shader_parameter("proximity_fade", 0.35)
+	beam_mat.set_shader_parameter("flicker_amount", 0.10)
+	cone.material_override = beam_mat
+	cone.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(cone)
+
 
 func _exit_tree() -> void:
 	# Drop autoload references so they don't dangle to a freed CharacterBody3D
