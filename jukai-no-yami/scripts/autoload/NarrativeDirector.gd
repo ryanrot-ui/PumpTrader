@@ -29,18 +29,19 @@ const OPENING_LINES: Array[String] = [
 	"青木ヶ原樹海",
 	"Aokigahara — the Sea of Trees",
 	"",
-	"Every year, souls enter and do not return.",
-	"Tonight you followed a rumor: four keepsakes",
-	"left by those who could not go home.",
+	"One year ago, my sister Hanako walked into this forest.",
+	"The police found her car. Nothing else. Case closed.",
 	"",
-	"Your flashlight is all that separates you",
-	"from what waits in the dark.",
+	"Last week a parcel arrived. No sender.",
+	"Inside: her house key, and a photograph of a torii gate.",
+	"",
+	"Tonight, I follow her in.",
 ]
 
 const PARKING_LOT_LINES: Array[String] = [
-	"The lot is empty. Your engine ticks as it cools.",
-	"Beyond the torii, the forest swallows sound.",
-	"Find the notes. Find the truth. Get out.",
+	"The lot is empty. My engine ticks as it cools.",
+	"Her car was found here. This exact row.",
+	"She left four things behind in there. I'm not leaving without them.",
 ]
 
 func _ready() -> void:
@@ -71,9 +72,15 @@ func play_game_opening() -> void:
 func play_exit_approach() -> void:
 	if not GameManager.ui_ref:
 		return
+	# If the player has read note 3, they know the light may not be theirs —
+	# the line changes to reflect that dread.
 	if GameManager.ui_ref.has_method("show_subtitle"):
-		GameManager.ui_ref.show_subtitle(
-			"出口の光が見える… / I see light. Is that the way out?", 4.0)
+		if 3 in GameManager.collected_notes:
+			GameManager.ui_ref.show_subtitle(
+				"あの光…「あなたのものではない」/ That light... 'It was never meant for you.'", 4.5)
+		else:
+			GameManager.ui_ref.show_subtitle(
+				"出口の光が見える… / I see light. Is that the way out?", 4.0)
 
 func _wait_for_hud() -> void:
 	for _i in 30:

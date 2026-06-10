@@ -229,10 +229,17 @@ func _make_path_mesh(parent: Node3D, center: Vector3, length: float, width: floa
 	var tail_bm := BoxMesh.new()
 	tail_bm.size = Vector3(width * 0.96, 0.04, tail_length)
 	tail.mesh = tail_bm
-	var tail_mat := StandardMaterial3D.new()
-	tail_mat.albedo_color = Color(0.28, 0.22, 0.14)
-	tail_mat.roughness = 0.98
-	tail_mat.metallic_specular = 0.02
+	# Same distance-fade shader as the main path — without it the tail
+	# stays lit past the point where the main path has already faded to
+	# black, reading as a disconnected floating strip. Darker dirt tone
+	# and zero emission so it visually recedes.
+	var tail_mat := ShaderMaterial.new()
+	tail_mat.shader = load("res://shaders/atmospheric_trail.gdshader")
+	tail_mat.set_shader_parameter("dirt_color", Color(0.28, 0.22, 0.14, 1.0))
+	tail_mat.set_shader_parameter("fade_far", 14.0)
+	tail_mat.set_shader_parameter("fade_band", 3.0)
+	tail_mat.set_shader_parameter("edge_fade", 0.22)
+	tail_mat.set_shader_parameter("emission_strength", 0.0)
 	tail.material_override = tail_mat
 	tail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(tail)

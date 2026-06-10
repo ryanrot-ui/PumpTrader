@@ -11,11 +11,9 @@ uniform float edge_fade : hint_range(0.0, 0.5) = 0.25;
 uniform float emission_strength : hint_range(0.0, 1.0) = 0.30;
 
 varying vec3 world_pos;
-varying float vert_cam_dist;
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	vert_cam_dist = length(CAMERA_POSITION_WORLD - world_pos);
 }
 
 // 4×4 Bayer matrix expressed as a hash-style lookup. Avoids GLSL ES
@@ -51,7 +49,13 @@ float bayer4x4_threshold(vec2 frag_xy) {
 }
 
 void fragment() {
-	float d = vert_cam_dist;
+	// Distance computed PER-FRAGMENT from the interpolated world position.
+	// Computing it per-vertex and interpolating is wrong on a long BoxMesh:
+	// the mesh only has corner vertices, and linear interpolation of
+	// distance between corners 50+ m apart badly distorts the fade band
+	// in the middle of the path. world_pos interpolates correctly
+	// (it's affine), so length() here is exact.
+	float d = length(CAMERA_POSITION_WORLD - world_pos);
 	float fade_start = fade_far - fade_band;
 	float dist_fade = clamp((d - fade_start) / fade_band, 0.0, 1.0);
 	float thr = bayer4x4_threshold(FRAGCOORD.xy);

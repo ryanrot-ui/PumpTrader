@@ -20,11 +20,14 @@ extends Node3D
 @export var corpse_id: int = 0
 @export var hang_height: float = 4.2      # tree branch height above ground
 
+# Sayuri's note foreshadows the yurei's method — she calls to victims in
+# the voices of people they love. The player reads this BEFORE finding
+# Hanako's diary (note 2: "if you hear my voice, do not follow it").
 const NOTE_DATA = {
 	"title_jp": "遺書 — さゆり",
 	"title_en": "Suicide Note — Sayuri",
-	"text_jp": "「もう疲れました。\n誰も私の声を聞いてくれなかった。\n森が私を呼んでいる。\nここで終わらせます。」",
-	"text_en": "'I am so tired.\nNo one would listen to me.\nThe forest has been calling.\nLet it end here.'",
+	"text_jp": "「三日前から、母の声がする。\nお前は知っているはずだ。母は五年前に死んだ。\nそれでも、木々の間から私を呼ぶ。\n昨日、白い着物の女を見た。\n口が動いていた。母の声で。\n\nもう疲れた。呼ばれたら、行くしかない。」",
+	"text_en": "'For three days I have heard my mother's voice.\nYou understand — my mother died five years ago.\nStill, she calls me from between the trees.\nYesterday I saw a woman in a white kimono.\nHer mouth was moving. With my mother's voice.\n\nI am so tired. When you are called, you go.'",
 }
 
 const PROXIMITY_RANGE   := 18.0   # within this — heavy sanity drain

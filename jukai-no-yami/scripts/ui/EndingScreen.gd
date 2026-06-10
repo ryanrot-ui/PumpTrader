@@ -2,21 +2,21 @@ extends Control
 
 const ENDINGS = {
 	"bad": {
-		"title":    "悪い結末",
-		"subtitle": "Bad Ending",
-		"body":     "あなたは形見を集めることができなかった。\n怨霊たちはこの森に安らぎを見つけられなかった。\n\nYou could not collect the keepsakes.\nThe vengeful spirits found no peace.",
+		"title":    "森に残して",
+		"subtitle": "Bad Ending — Left Behind",
+		"body":     "あなたは何も持たずに森を出た。\n花子が何を見たのか、知らないまま。\n\n時々、午前三時に電話が鳴る。\n出ても、誰も話さない。\nただ、針がゆっくり回る音だけが聞こえる。\n\nYou walked out with nothing. You never\nlearned what Hanako saw in there.\n\nSometimes the phone rings at 3 a.m.\nNo one speaks when you answer. There is\nonly the sound of a compass needle, turning.",
 		"color":    Color(0.5, 0.1, 0.1),
 	},
 	"good": {
-		"title":    "良い結末",
-		"subtitle": "Good Ending",
-		"body":     "あなたはいくつかの形見を持って森を出た。\n一部の霊魂は解放されたが、まだ残りがいる。\n\nYou escaped with some keepsakes.\nSome spirits found release — others remain.",
+		"title":    "妹の声",
+		"subtitle": "Good Ending — Her Voice",
+		"body":     "出口で、白い女があなたに手を伸ばした。\nその時、別の声が女の名を呼んだ — 花子の声。\n女が振り向いた一瞬に、あなたは森を出た。\n\n妹はまだあの森にいる。\nでも最後の瞬間、彼女はあなたを守った。\n\nAt the exit, the woman in white reached\nfor you — and another voice called her name.\nHanako's voice. In the moment she turned,\nyou escaped.\n\nYour sister is still in that forest.\nBut at the end, she protected you.",
 		"color":    Color(0.2, 0.35, 0.5),
 	},
 	"true": {
-		"title":    "真の結末",
-		"subtitle": "True Ending — 解放",
-		"body":     "すべての形見が集められた。花子は、ついに安らぎを得た。\n樹海の闇は晴れ、朝の光が差し込んでくる。\n\nAll belongings collected. Hanako is at peace.\nThe darkness lifts. Dawn reaches the Sea of Trees.",
+		"title":    "夜明け",
+		"subtitle": "True Ending — Dawn",
+		"body":     "四つの形見。彼女の人生のかけら。\nそれを全部抱えて森を出た時、\n後ろで誰かが、長い息を吐いた。\n\n振り返ると、木々の間に朝の光。\n手の中の方位磁針は、もう回っていない。\n北を指して、止まっている。\n\nFour keepsakes. The pieces of her life.\nWhen you carried them all past the gate,\nsomeone behind you let out a long-held breath.\n\nYou looked back: morning light between the trees.\nThe compass in your hand has stopped turning.\nIt points north, and is still.",
 		"color":    Color(0.4, 0.6, 0.3),
 	},
 }

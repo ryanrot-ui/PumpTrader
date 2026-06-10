@@ -110,8 +110,17 @@ func _make_floor(size: Vector3) -> StaticBody3D:
 
 func _make_world_env(_top: Color, _horizon: Color, fog_color: Color, fog_density: float) -> void:
 	var env = Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.0, 0.0, 0.0, 1.0)
+	# Night-sky shader background (stars + dim moon) instead of flat black.
+	# Looking above the treeline used to show pure void; now there's faint
+	# celestial depth. Ambient lighting stays AMBIENT_SOURCE_COLOR below,
+	# so the sky contributes NO light to the scene — purely visual.
+	var sky_mat = ShaderMaterial.new()
+	sky_mat.shader = load("res://shaders/night_sky.gdshader")
+	var sky = Sky.new()
+	sky.sky_material = sky_mat
+	sky.radiance_size = Sky.RADIANCE_SIZE_32  # tiny — sky is near-black anyway
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
 
 	# Horror night forest — dark but playable. Bumped from 0.28 to 0.42 so
 	# the trees and ghosts read against the night sky instead of being

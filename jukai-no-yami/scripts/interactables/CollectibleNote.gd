@@ -1,25 +1,28 @@
 extends StaticBody3D
 
+# The four keepsakes tell one story in order: Hanako didn't come here to
+# die — something called her in, and kept her. Note 3 recontextualizes
+# the warm "exit light" the player has been walking toward.
 const NOTE_DATA = {
 	0: {
-		"title_jp": "山田花子の手紙", "title_en": "Hanako Yamada's Letter",
-		"text_jp": "「もう帰れない。あなたに会いたかった。\nこの森が私を呼んでいる。待っていて。」\n\n— 花子",
-		"text_en": "'I cannot go back. I wanted to see you one more time.\nThis forest keeps calling my name. Wait for me.'\n\n— Hanako",
+		"title_jp": "花子の手紙", "title_en": "Hanako's Letter",
+		"text_jp": "「ここに来たのは、消えるためだった。\nでも先客がいたの。白い着物の女。\n眠っている間、ずっと私を見ている。\n…帰り道が、思い出せない。」\n\n— 花子",
+		"text_en": "'I came here to disappear. But someone was\nalready here. A woman in a white kimono.\nShe watches me while I sleep.\n...I can no longer remember the way back.'\n\n— Hanako",
 	},
 	1: {
-		"title_jp": "壊れた小物", "title_en": "A Broken Keepsake",
-		"text_jp": "ガラスの破片。裏に書かれた文字:\n「待っていて — 帰らないで」\n誰かの指紋がまだ残っている。",
-		"text_en": "Shards of glass. Scratched on the back:\n'Wait for me — don't go home.'\nSomeone's fingerprints remain.",
+		"title_jp": "壊れた方位磁針", "title_en": "A Broken Compass",
+		"text_jp": "あなたが昔、花子にあげた方位磁針。\n蓋の裏に、彼女の字で:\n「ここでは北を指さない。\nぐるぐる回って、森の奥を指す。」\n針は今も、ゆっくりと回り続けている。",
+		"text_en": "The compass you gave Hanako years ago.\nInside the lid, in her handwriting:\n'It doesn't point north here. It spins,\nthen points deeper into the forest.'\nThe needle is still turning, slowly.",
 	},
 	2: {
-		"title_jp": "錆びた鍵", "title_en": "A Rusted Key",
-		"text_jp": "鍵は何も開かない。\nただ、誰かがここで最後の夜を過ごした形見として、\n土に半分埋まっている。",
-		"text_en": "The key opens nothing.\nIt lies half-buried in the soil —\na memorial to someone's final night here.",
+		"title_jp": "日記の切れ端", "title_en": "A Torn Diary Page",
+		"text_jp": "「白い女が、皆の眠る場所を見せてくれた。\n木の根の下。何十人も。静かだった。\nこれを読んでいるなら、私はもうその一人。\nお願い。私の声が聞こえても、\n絶対について来ないで。」",
+		"text_en": "'The woman in white showed me where the\nothers sleep. Under the roots. Dozens.\nSo quiet. If you are reading this,\nI am one of them now. Please —\nif you hear my voice, do not follow it.'",
 	},
 	3: {
 		"title_jp": "最後の写真", "title_en": "The Final Photograph",
-		"text_jp": "家族の写真。全員の顔に×印。\n裏面: 「ごめんね」\nインクはまだ濡れている。",
-		"text_en": "A family portrait. Every face crossed out.\nOn the back: 'I'm sorry.'\nThe ink is still wet.",
+		"text_jp": "家族写真。顔がすべて×で消されている。\n…あなたの顔だけ、丸で囲まれている。\n裏面、花子の字ではない何かの字:\n「来てくれたのね。\nあの出口の光は、あの子のもの。\nあなたのものではない。」",
+		"text_en": "A family portrait. Every face crossed out —\nexcept yours. Yours is circled.\nOn the back, in handwriting that is not Hanako's:\n'So you came. That light at the exit\nbelongs to her now. It was never\nmeant for you.'",
 	},
 }
 

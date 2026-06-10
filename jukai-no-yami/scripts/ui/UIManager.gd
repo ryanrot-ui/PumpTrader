@@ -1,12 +1,15 @@
 extends CanvasLayer
 
-const NOTE_JP = {0: "山田花子の手紙", 1: "壊れた小物", 2: "錆びた鍵", 3: "最後の写真"}
+const NOTE_JP = {0: "花子の手紙", 1: "壊れた方位磁針", 2: "日記の切れ端", 3: "最後の写真"}
 
+# Player's inner voice after each pickup — tracks the arc: recognition →
+# wrongness → dread → panic. Note 3's monologue lands the twist about
+# the exit light.
 const MONOLOGUE = {
-	0: "A letter... Hanako? Who is Hanako? Why does she sound like she's already gone?",
-	1: "Another keepsake. How many people died out here? I need the rest. I need to leave.",
-	2: "Something is watching from the trees. The path markers — stay on the light. Stay on the path.",
-	3: "All four... God, they were real people. The exit. I have to reach the exit NOW.",
+	0: "This is Hanako's handwriting. She was ALIVE in here. And she wasn't alone.",
+	1: "Her compass... I gave her this. Why is the needle still moving?",
+	2: "'If you hear my voice, do not follow it.' Then whose voice led me this deep?",
+	3: "Every face crossed out except mine. Mine is circled. That light isn't the way out — RUN ANYWAY.",
 }
 
 var sanity_bar: ProgressBar
