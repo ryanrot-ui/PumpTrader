@@ -1,0 +1,207 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Users & auth ────────────────────────────────────────────────────────────
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String? // null for OAuth-only accounts
+  name         String?
+  createdAt    DateTime  @default(now())
+  settings     Settings?
+  wallets      Wallet[]
+}
+
+// ── Wallets ─────────────────────────────────────────────────────────────────
+
+model Wallet {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publicKey String   @unique
+  label     String   @default("Bot wallet")
+  // AES-256-GCM ciphertext of the secret key (iv:tag:data, hex). Null for
+  // watch-only wallets (e.g. a connected Phantom address).
+  encryptedKey String?
+  isWatchOnly  Boolean @default(false)
+  createdAt    DateTime @default(now())
+}
+
+// ── Live-editable bot settings (one row per user) ───────────────────────────
+
+model Settings {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Buying
+  buyAmountSol        Float @default(0.1)
+  confidenceThreshold Int   @default(85)
+  minLiquiditySol     Float @default(50)
+  minMarketCapUsd     Float @default(50000)
+  maxMarketCapUsd     Float @default(2000000)
+  minHolders          Int   @default(100)
+  minVolume5mUsd      Float @default(5000)
+  maxSlippageBps      Int   @default(300)
+
+  // Selling
+  takeProfitPct   Float   @default(100) // default: cash out at +100%
+  stopLossPct     Float   @default(30)
+  trailingStopPct Float?  // null = disabled
+  maxHoldMinutes  Int?    // null = disabled
+  sellPortionPct  Float   @default(100) // % of position sold at TP
+
+  // Risk
+  maxSolPerTrade    Float @default(0.25)
+  maxOpenPositions  Int   @default(3)
+  maxDailyLossSol   Float @default(1)
+  dailyProfitTarget Float? // SOL; null = disabled
+  maxExposureSol    Float @default(1)
+  lossCooldownMin   Int   @default(15)
+
+  // Engine
+  botEnabled   Boolean @default(false)
+  paperTrading Boolean @default(true)
+
+  updatedAt DateTime @updatedAt
+}
+
+// ── Scanner output ──────────────────────────────────────────────────────────
+
+model DetectedToken {
+  id          String   @id @default(cuid())
+  mint        String   @unique
+  symbol      String?
+  name        String?
+  poolAddress String?
+  migratedAt  DateTime
+  detectedAt  DateTime @default(now())
+
+  // latest evaluation
+  score      Int?
+  verdict    String? // BUY_CANDIDATE | REJECTED | BOUGHT | IGNORED
+  rejectionReasons String[] @default([])
+
+  snapshots TokenSnapshot[]
+  scores    ScoreRecord[]
+  trades    Trade[]
+
+  @@index([detectedAt])
+  @@index([verdict])
+}
+
+model TokenSnapshot {
+  id      String        @id @default(cuid())
+  tokenId String
+  token   DetectedToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  at      DateTime      @default(now())
+
+  priceUsd     Float?
+  liquiditySol Float?
+  marketCapUsd Float?
+  volume5mUsd  Float?
+  holderCount  Int?
+  txPerMinute  Float?
+  buySellRatio Float?
+
+  @@index([tokenId, at])
+}
+
+model ScoreRecord {
+  id      String        @id @default(cuid())
+  tokenId String
+  token   DetectedToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  at      DateTime      @default(now())
+
+  total      Int
+  // full per-metric breakdown, green flags, red flags — kept as JSON so the
+  // scoring engine can evolve without migrations
+  breakdown  Json
+  greenFlags String[]
+  redFlags   String[]
+  critical   Boolean @default(false) // any critical red flag present
+
+  @@index([tokenId, at])
+}
+
+// ── Trading ─────────────────────────────────────────────────────────────────
+
+model Trade {
+  id      String        @id @default(cuid())
+  tokenId String
+  token   DetectedToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  side       String // BUY | SELL
+  paper      Boolean  @default(true)
+  amountSol  Float
+  tokenQty   Float
+  priceUsd   Float?
+  slippageBps Int?
+  signature  String? // tx signature (null for paper trades)
+  reason     String // human-readable explanation of why this trade fired
+  createdAt  DateTime @default(now())
+
+  positionId String?
+  position   Position? @relation(fields: [positionId], references: [id])
+
+  @@index([createdAt])
+}
+
+model Position {
+  id     String @id @default(cuid())
+  mint   String
+  symbol String?
+
+  status       String   @default("OPEN") // OPEN | CLOSED
+  paper        Boolean  @default(true)
+  entrySol     Float
+  entryPriceUsd Float?
+  tokenQty     Float
+  peakPriceUsd Float? // for trailing stop
+  exitSol      Float?
+  exitPriceUsd Float?
+  pnlSol       Float?
+  pnlPct       Float?
+  entryReason  String
+  exitReason   String?
+  openedAt     DateTime  @default(now())
+  closedAt     DateTime?
+
+  trades Trade[]
+
+  @@index([status])
+  @@index([openedAt])
+}
+
+// ── Logging & metrics ───────────────────────────────────────────────────────
+
+model LogEntry {
+  id        String   @id @default(cuid())
+  at        DateTime @default(now())
+  level     String // debug | info | warn | error
+  source    String // scanner | scoring | executor | risk | api | notify
+  message   String
+  meta      Json?
+
+  @@index([at])
+  @@index([level])
+}
+
+model DailyStats {
+  id          String   @id @default(cuid())
+  date        DateTime @unique @db.Date
+  realizedSol Float    @default(0)
+  trades      Int      @default(0)
+  wins        Int      @default(0)
+  losses      Int      @default(0)
+  scanned     Int      @default(0)
+  bought      Int      @default(0)
+  rejected    Int      @default(0)
+}

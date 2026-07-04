@@ -1,0 +1,166 @@
+# PumpTrader — Pump.fun Migration Trading Platform
+
+An automated trading platform for **newly migrated Pump.fun tokens on Raydium**. It
+continuously watches for bonding-curve migrations, scores every token 0–100 against
+dozens of quality indicators (green flags up, red flags down), buys only tokens that
+clear **all** configurable rules, and exits positions by take-profit / stop-loss /
+trailing-stop / time / emergency-rug rules — **selling the entire position at +100%
+profit by default**.
+
+> ⚠️ **Read this first.** Newly migrated meme tokens are among the most dangerous
+> assets in crypto: most go to zero, and rugs happen in seconds. This software gives
+> you filters, scoring transparency, and risk controls — it does **not** and cannot
+> guarantee profitable trades. No signal in this codebase predicts profit. Start in
+> **paper trading mode** (the default), and only ever fund the bot wallet with money
+> you can afford to lose entirely.
+
+---
+
+## Architecture
+
+```
+┌────────────┐   ┌──────────────┐   ┌─────────────────────────────┐
+│  Next.js   │   │  PostgreSQL  │   │        Trading Engine        │
+│  frontend  │◄──┤   (Prisma)   ├──►│  (separate Node worker)      │
+│  + API     │   └──────────────┘   │                              │
+└─────┬──────┘                      │  MigrationScanner (WebSocket │
+      │        ┌──────────────┐     │   onLogs + polling fallback) │
+      └───────►│    Redis     │◄────┤  Collectors → Scoring        │
+   SSE feed,   │ (pub/sub,    │     │  Buy rules → Risk manager    │
+   hot-reload  │  bot state)  │     │  Executor (Jupiter/Raydium   │
+   settings    └──────────────┘     │   route or paper fills)      │
+                                    │  Position monitor (exits)    │
+                                    └─────────────────────────────┘
+```
+
+- **Frontend** — Next.js 14 (App Router), React, TypeScript, TailwindCSS. Dark,
+  Photon/Axiom-inspired dashboard. Mobile responsive.
+- **Backend API** — Next.js route handlers: auth, settings, wallets, tokens,
+  positions, trades, stats, logs, bot control, SSE live feed.
+- **Trading engine** — standalone worker (`npm run engine`), communicates with the
+  web app only through Postgres + Redis, so either side can restart independently.
+- **Database** — PostgreSQL via Prisma: users, wallets, settings, detected tokens,
+  score records (full breakdowns), snapshots, trades, positions, logs, daily stats.
+- **Redis** — live-editable settings (pub/sub hot reload), bot status/heartbeat,
+  control channel (emergency stop), dashboard live feed, rate limiting.
+
+## Quick start
+
+```bash
+cp .env.example .env
+# fill in: NEXTAUTH_SECRET (openssl rand -base64 32),
+#          WALLET_ENCRYPTION_KEY (openssl rand -hex 32),
+#          SOLANA_RPC_URL / SOLANA_WS_URL (a dedicated RPC — Helius, Triton,
+#          QuickNode; the public endpoint rate-limits the scanner immediately)
+
+docker compose up -d postgres redis
+npm install
+npx prisma db push        # create schema
+npm run dev               # web app on :3000
+npm run engine            # trading engine worker (separate terminal)
+```
+
+Or run the whole stack in Docker: `docker compose up --build` (includes nightly
+Postgres backups to `./backups`, and `restart: always` gives the engine automatic
+crash recovery — it rebuilds its watchlist and open positions from Postgres on boot).
+
+Create an account at `http://localhost:3000/register`, then:
+
+1. **Settings → Wallets → Connect Phantom** (watch-only: balances + deposits).
+2. Create a **fresh wallet in Phantom** to act as the bot wallet, fund it with a
+   small amount, export its private key, and **Import bot wallet**. The key is
+   encrypted with AES-256-GCM (`WALLET_ENCRYPTION_KEY`) before it touches the
+   database and is decrypted only in the engine at signing time.
+3. Leave **paper trading ON** until you trust your configuration.
+4. Press **Start** in the sidebar.
+
+### Why can't Phantom itself trade for the bot?
+
+Phantom (by design) requires a human click to approve every transaction — no
+extension wallet can auto-sign for a server-side bot. Every serious trading platform
+(Photon, BullX, Axiom) works the same way this app does: a dedicated hot wallet held
+by the engine executes trades, while your main wallet stays in Phantom untouched.
+
+## How trading decisions are made (fully transparent)
+
+1. **Scanner** (`src/engine/scanner/migrationScanner.ts`) — WebSocket `onLogs`
+   subscription on the Pump.fun Raydium migration authority detects migrations within
+   seconds; a 30s polling fallback catches anything missed during disconnects.
+2. **Collectors** (`src/engine/analysis/collectors.ts`) — DexScreener (price,
+   liquidity, volume, buys/sells), Solana RPC (mint/freeze authority, top holders),
+   optional Helius (holder counts), plus derived series: volume growth, holder
+   growth, momentum, momentum acceleration, volatility, liquidity drift, slippage
+   estimate, wash-trading and artificial-volume heuristics. **Missing data is scored
+   neutral — never in a token's favor.**
+3. **Scoring** (`src/engine/analysis/scoring.ts`) — 13 weighted metric groups →
+   base score, plus green flags (bounded bonus) and red flags (explicit penalties).
+   Critical flags (honeypot suspicion, active mint/freeze authority, liquidity
+   removal, dev dumping) **block buying regardless of score**. Weights and all
+   thresholds live in one file and every contribution is stored per evaluation and
+   rendered in the Scanner UI.
+4. **Buy rules** (`src/engine/trading/rules.ts`) — score ≥ threshold (default 85),
+   liquidity/market-cap/holders/volume minimums, positive volume trend, rising
+   momentum, slippage cap, zero critical flags. Every rejected token is stored with
+   its exact rejection reasons.
+5. **Risk manager** (`src/engine/trading/riskManager.ts`) — max SOL/trade, max open
+   positions, max exposure, daily loss limit, daily profit target, loss cooldown,
+   emergency stop. Position size is clamped to remaining exposure headroom.
+6. **Exits** (`src/engine/trading/exitRules.ts`) — priority: emergency rug exit
+   (liquidity draining / sells failing) → stop loss → trailing stop → take profit
+   (default: sell 100% at +100%) → time exit.
+7. Every trade stores its **entry/exit reason**, tx signature, and PnL.
+
+## Configuration
+
+Everything on the Settings page hot-reloads into the engine via Redis pub/sub — no
+restart: buy amount, confidence threshold, liquidity/mcap/holder/volume minimums, max
+slippage, take profit, stop loss, trailing stop, time exit, sell portion, max
+SOL/trade, max open positions, daily loss limit, daily profit target, max exposure,
+loss cooldown, paper/live mode, bot on/off, emergency stop (kill switch that also
+exits all open positions).
+
+## Security
+
+- Bot wallet keys: AES-256-GCM, key material only in env, decrypted only at signing.
+- Auth: NextAuth (bcrypt credentials + optional Google OAuth), JWT sessions,
+  middleware-protected routes; CSRF protection built into NextAuth.
+- Input validation: zod on every mutating endpoint; SQLi prevented by Prisma
+  parameterized queries; XSS by React escaping + security headers (`next.config.mjs`).
+- Rate limiting on registration and wallet endpoints (Redis).
+- Private keys are never returned by any API, never logged, never sent to the client.
+- Nightly automated Postgres backups (docker compose `backup` service).
+
+## Testing
+
+```bash
+npm test          # vitest: scoring, buy rules, risk manager, exit rules, crypto
+npm run typecheck
+```
+
+Paper mode **is** the integration environment: the full pipeline (scanner →
+scoring → rules → risk → executor → position monitor) runs identically, with fills
+simulated at observed prices minus a slippage haircut.
+
+## Project layout
+
+```
+prisma/schema.prisma          # full data model
+src/lib/                      # prisma, redis, crypto, auth, validation, rate limit
+src/engine/                   # the trading engine worker
+  scanner/migrationScanner.ts
+  analysis/{types,collectors,scoring}.ts
+  trading/{rules,riskManager,exitRules,executor}.ts
+  notify/  logging/  config.ts  index.ts
+src/app/                      # Next.js pages + API routes
+src/components/               # dashboard UI, charts (TradingView lightweight-charts)
+tests/                        # unit tests for all decision logic
+```
+
+## Extending
+
+- **Weights**: edit `DEFAULT_WEIGHTS` in `scoring.ts` (or lift them into Settings).
+- **New metric**: add a field to `TokenMetrics`, populate it in a collector, score
+  it in `scoring.ts` — the UI breakdown picks it up automatically.
+- **New data source**: add a collector; failures degrade gracefully to neutral.
+- **Notifications**: Telegram + Discord work out of the box via env vars; the email
+  hook is in `src/engine/notify/index.ts` (wire nodemailer to your SMTP).
