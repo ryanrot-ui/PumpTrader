@@ -1,14 +1,18 @@
 import { prisma } from "@/lib/prisma";
-import { redis, KEYS } from "@/lib/redis";
+import { subscribe, CHANNELS } from "@/lib/redis";
 import { settingsSchema, type BotSettings } from "@/lib/validation";
 import { logger } from "./logging/logger";
 
 /**
  * Live settings loader. The engine holds settings in memory and reloads them
- * when the web app publishes on the settings channel — no restart needed.
+ * from the database — no restart needed. Changes are picked up two ways:
+ * a periodic DB poll (always on, so Redis is never required) and a Redis
+ * pub/sub notification when Redis is configured (instant propagation).
  * The first user's settings row drives the engine (single-operator design;
  * extend to per-user engines by keying this on userId).
  */
+
+const POLL_INTERVAL_MS = 5_000;
 
 export const DEFAULT_SETTINGS: BotSettings = settingsSchema.parse({
   buyAmountSol: 0.1,
@@ -44,7 +48,9 @@ export const DEFAULT_SETTINGS: BotSettings = settingsSchema.parse({
 
 export class LiveConfig {
   private current: BotSettings = DEFAULT_SETTINGS;
-  private sub = redis.duplicate();
+  private lastUpdatedAt: number | null = null;
+  private unsubscribe: (() => void) | null = null;
+  private pollTimer: NodeJS.Timeout | null = null;
 
   get(): BotSettings {
     return this.current;
@@ -52,32 +58,55 @@ export class LiveConfig {
 
   async start(): Promise<void> {
     await this.reload();
-    await this.sub.subscribe(KEYS.settingsChannel);
-    this.sub.on("message", (channel) => {
-      if (channel === KEYS.settingsChannel) {
-        this.reload().catch((e) =>
-          logger.error("engine", `settings reload failed: ${(e as Error).message}`)
-        );
-      }
-    });
+    // Fast path: instant reload when Redis is configured (no-op otherwise).
+    this.unsubscribe = subscribe(CHANNELS.settingsUpdated, () => void this.safeReload());
+    // Always-on fallback: cheap updatedAt check every few seconds.
+    this.pollTimer = setInterval(() => void this.pollForChanges(), POLL_INTERVAL_MS);
   }
 
   async stop(): Promise<void> {
-    await this.sub.unsubscribe().catch(() => {});
-    this.sub.disconnect();
+    this.unsubscribe?.();
+    if (this.pollTimer) clearInterval(this.pollTimer);
+  }
+
+  private async pollForChanges(): Promise<void> {
+    try {
+      const row = await prisma.settings.findFirst({
+        orderBy: { updatedAt: "desc" },
+        select: { updatedAt: true },
+      });
+      const stamp = row?.updatedAt.getTime() ?? null;
+      if (stamp !== this.lastUpdatedAt) await this.reload();
+    } catch {
+      /* DB hiccup — next poll retries; the engine keeps its current settings */
+    }
+  }
+
+  private async safeReload(): Promise<void> {
+    try {
+      await this.reload();
+    } catch (e) {
+      logger.error("engine", `settings reload failed: ${(e as Error).message}`);
+    }
   }
 
   async reload(): Promise<void> {
     const row = await prisma.settings.findFirst({ orderBy: { updatedAt: "desc" } });
     if (!row) {
       this.current = DEFAULT_SETTINGS;
+      this.lastUpdatedAt = null;
       return;
     }
+    this.lastUpdatedAt = row.updatedAt.getTime();
     const { id: _id, userId: _userId, updatedAt: _updatedAt, ...values } = row;
     const parsed = settingsSchema.safeParse(values);
     if (parsed.success) {
+      const modeChanged = parsed.data.paperTrading !== this.current.paperTrading;
       this.current = parsed.data;
-      logger.info("engine", "settings reloaded", { paperTrading: parsed.data.paperTrading });
+      logger.info("engine", `settings reloaded${modeChanged ? ` — trading mode is now ${parsed.data.paperTrading ? "PAPER" : "LIVE"}` : ""}`, {
+        paperTrading: parsed.data.paperTrading,
+        botEnabled: parsed.data.botEnabled,
+      });
     } else {
       logger.error("engine", `stored settings invalid, keeping previous: ${parsed.error.message}`);
     }

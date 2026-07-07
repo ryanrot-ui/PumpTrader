@@ -208,6 +208,13 @@ model Position {
   entryReason   String
   exitReason    String?
 
+  // Excursion tracking (updated on every monitor tick):
+  // best unrealized gain and worst peak-to-trough drop seen while open.
+  maxUnrealizedPnlPct Float?
+  maxDrawdownPct      Float?
+  // Pool liquidity at entry — baseline for the liquidity-drop rug signal.
+  entryLiquidityUsd   Float?
+
   // Snapshot of the analysis that triggered the entry
   scannerScore     Int?
   scoreExplanation String?
@@ -220,6 +227,24 @@ model Position {
   @@index([status])
   @@index([openedAt])
   @@index([mint])
+}
+
+// ── Engine coordination ─────────────────────────────────────────────────────
+
+// Singleton row (id = "engine"). The database is the source of truth for
+// engine state, so the web app and the worker coordinate without requiring
+// Redis. When Redis IS configured it is used as a pub/sub fast path only.
+model EngineState {
+  id          String    @id @default("engine")
+  status      String    @default("stopped") // running | stopped | emergency_stopped
+  readOnly    Boolean   @default(false)
+  heartbeatAt DateTime?
+  health      Json? // rpc latency/endpoint, scans/min, watchlist size, memory…
+  // One-shot control command (emergency_stop | resume) written by the web
+  // app; the engine consumes and clears it within one poll interval.
+  controlRequest     String?
+  controlRequestedAt DateTime?
+  updatedAt          DateTime @updatedAt
 }
 
 // ── Logging & metrics ───────────────────────────────────────────────────────

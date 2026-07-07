@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { redis, KEYS } from "@/lib/redis";
+import { prisma } from "@/lib/prisma";
+import { engineAlive, getEngineState, type EngineHealth } from "@/lib/engineState";
 import { requireUser, unauthorized } from "@/lib/session";
 
 /** Engine health & telemetry for the dashboard health strip. */
@@ -7,30 +8,32 @@ export async function GET() {
   const user = await requireUser();
   if (!user) return unauthorized();
 
-  const [health, heartbeat, status, readOnly, lastError] = await Promise.all([
-    redis.hgetall("bot:health").catch(() => ({}) as Record<string, string>),
-    redis.get(KEYS.botHeartbeat).catch(() => null),
-    redis.get(KEYS.botStatus).catch(() => null),
-    redis.get("bot:readOnly").catch(() => null),
-    redis.get("bot:lastError").catch(() => null),
+  const [state, lastErrorEntry] = await Promise.all([
+    getEngineState(),
+    prisma.logEntry.findFirst({
+      where: { level: "error", at: { gte: new Date(Date.now() - 7 * 86_400_000) } },
+      orderBy: { at: "desc" },
+      select: { at: true, source: true, message: true },
+    }),
   ]);
 
-  const beatAge = heartbeat ? Date.now() - parseInt(heartbeat, 10) : null;
-  const num = (v: string | undefined) => (v ? parseInt(v, 10) : null);
+  const health = (state?.health ?? {}) as EngineHealth;
 
   return NextResponse.json({
-    engineAlive: beatAge !== null && beatAge < 20_000,
-    status: status ?? "stopped",
-    readOnly: readOnly === "1",
+    engineAlive: engineAlive(state?.heartbeatAt),
+    status: state?.status ?? "stopped",
+    readOnly: state?.readOnly ?? false,
     rpcUrl: health.rpcUrl ?? null,
-    rpcLatencyMs: num(health.rpcLatencyMs),
-    rpcFailures: num(health.rpcFailures),
-    scannerLastEventAt: num(health.scannerLastEventAt),
-    scansPerMin: num(health.scansPerMin),
-    watchlistSize: num(health.watchlistSize),
-    lastTradeAt: num(health.lastTradeAt),
-    memoryRssMb: num(health.rssMb),
-    memoryHeapMb: num(health.heapMb),
-    lastError: lastError ? JSON.parse(lastError) : null,
+    rpcLatencyMs: health.rpcLatencyMs ?? null,
+    rpcFailures: health.rpcFailures ?? null,
+    scannerLastEventAt: health.scannerLastEventAt ?? null,
+    scansPerMin: health.scansPerMin ?? null,
+    watchlistSize: health.watchlistSize ?? null,
+    lastTradeAt: health.lastTradeAt ?? null,
+    memoryRssMb: health.rssMb ?? null,
+    memoryHeapMb: health.heapMb ?? null,
+    lastError: lastErrorEntry
+      ? { at: lastErrorEntry.at.getTime(), source: lastErrorEntry.source, message: lastErrorEntry.message }
+      : null,
   });
 }

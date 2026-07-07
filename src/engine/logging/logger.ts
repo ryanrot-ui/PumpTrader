@@ -1,12 +1,14 @@
 import { prisma } from "@/lib/prisma";
-import { redis, KEYS } from "@/lib/redis";
+import { publish, CHANNELS } from "@/lib/redis";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type LogSource = "scanner" | "scoring" | "executor" | "risk" | "api" | "notify" | "engine";
 
 /**
- * Structured logger: console + database + Redis pub/sub (for the dashboard
- * live feed). DB writes are fire-and-forget so logging never blocks trading.
+ * Structured logger: console + database + live-feed publish (no-op without
+ * Redis — the dashboard feed then polls the log table instead). DB writes are
+ * fire-and-forget so logging never blocks trading. The dashboard's
+ * "last error" indicator reads the newest error-level LogEntry.
  */
 export function log(
   level: LogLevel,
@@ -19,28 +21,11 @@ export function log(
   else if (level === "warn") console.warn(line, meta ?? "");
   else console.log(line, meta ?? "");
 
-  // Surface the most recent error on the dashboard health strip.
-  if (level === "error") {
-    void redis
-      .set(
-        "bot:lastError",
-        JSON.stringify({ at: Date.now(), source, message, meta }),
-        "EX",
-        7 * 86400
-      )
-      .catch(() => {});
-  }
-
   void prisma.logEntry
     .create({ data: { level, source, message, meta: meta ? JSON.parse(JSON.stringify(meta)) : undefined } })
     .catch(() => {});
 
-  void redis
-    .publish(
-      KEYS.liveFeed,
-      JSON.stringify({ at: Date.now(), level, source, message, meta })
-    )
-    .catch(() => {});
+  publish(CHANNELS.liveFeed, JSON.stringify({ at: Date.now(), level, source, message, meta }));
 }
 
 export const logger = {

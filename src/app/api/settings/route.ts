@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { redis, KEYS } from "@/lib/redis";
-import { settingsSchema } from "@/lib/validation";
+import { publish, CHANNELS } from "@/lib/redis";
+import { settingsUpdateSchema } from "@/lib/validation";
 import { requireUser, unauthorized } from "@/lib/session";
 
 export async function GET() {
@@ -20,7 +20,7 @@ export async function PUT(req: Request) {
   if (!user) return unauthorized();
 
   const body = await req.json().catch(() => null);
-  const parsed = settingsSchema.safeParse(body);
+  const parsed = settingsUpdateSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
       { error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") },
@@ -59,7 +59,8 @@ export async function PUT(req: Request) {
       .catch(() => {});
   }
 
-  // Tell the engine to hot-reload — no restart needed.
-  await redis.publish(KEYS.settingsChannel, "updated").catch(() => {});
+  // Tell the engine to hot-reload — no restart needed. (The engine also
+  // polls the settings row, so this works without Redis too.)
+  publish(CHANNELS.settingsUpdated, "updated");
   return NextResponse.json({ ok: true });
 }

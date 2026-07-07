@@ -2,7 +2,8 @@ import { Connection, Keypair } from "@solana/web3.js";
 import bs58 from "bs58";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { redis, KEYS } from "@/lib/redis";
+import { subscribe, CHANNELS } from "@/lib/redis";
+import { ENGINE_STATE_ID, updateEngineState } from "@/lib/engineState";
 import { decryptSecret } from "@/lib/crypto";
 import { validateEnv, rpcEndpoints } from "@/lib/env";
 import {
@@ -17,6 +18,7 @@ import { MigrationScanner, type MigrationEvent } from "./scanner/migrationScanne
 import { evaluateBuyRules } from "./trading/rules";
 import { checkRisk } from "./trading/riskManager";
 import { evaluateExit } from "./trading/exitRules";
+import { trackExcursions } from "./trading/excursions";
 import {
   LiveExecutor,
   PaperExecutor,
@@ -74,7 +76,8 @@ class TradingEngine {
 
   private config = new LiveConfig();
   private scanner: MigrationScanner;
-  private control = redis.duplicate();
+  private unsubscribeControl: (() => void) | null = null;
+  private readOnly = false;
   private watchlist = new Map<string, WatchedToken>();
   private buyLock = new AsyncLock(); // serializes risk-check + reservation
   private selling = new Set<string>();
@@ -126,17 +129,16 @@ class TradingEngine {
     logger.info("engine", `recovered ${openPositions} open position(s), ${recent.length} watched token(s)`);
 
     await this.scanner.start();
-    await this.control.subscribe(KEYS.controlChannel);
-    this.control.on("message", (_ch, msg) => this.onControl(msg));
+    // Control fast path via Redis pub/sub when configured; the state tick
+    // below polls the DB control queue either way, so Redis is optional.
+    this.unsubscribeControl = subscribe(CHANNELS.control, (msg) => void this.onControl(msg));
 
     this.scheduleEvalLoop();
     this.timers.push(setInterval(() => void this.monitorPositions(), MONITOR_INTERVAL_MS));
     this.timers.push(setInterval(() => void this.publishHealth(), HEALTH_INTERVAL_MS));
     this.timers.push(setInterval(() => void this.archiveOldData(), ARCHIVE_INTERVAL_MS));
-    this.timers.push(
-      setInterval(() => void redis.set(KEYS.botHeartbeat, Date.now().toString()).catch(() => {}), 5_000)
-    );
-    await redis.set(KEYS.botStatus, "running");
+    this.timers.push(setInterval(() => void this.stateTick(), 5_000));
+    await this.stateTick();
     logger.info("engine", "engine running — scanning for Pump.fun migrations");
   }
 
@@ -145,9 +147,38 @@ class TradingEngine {
     if (this.evalTimer) clearTimeout(this.evalTimer);
     await this.scanner.stop();
     await this.config.stop();
-    await redis.set(KEYS.botStatus, "stopped").catch(() => {});
-    this.control.disconnect();
+    this.unsubscribeControl?.();
+    await updateEngineState({ status: "stopped" }).catch(() => {});
     logger.info("engine", "engine stopped");
+  }
+
+  /**
+   * Heartbeat + control poll, every 5s. Writes liveness to the shared
+   * EngineState row and consumes any queued control command (the DB queue is
+   * the Redis-free fallback for emergency stop / resume) and the read-only
+   * flag. Failures are swallowed — the next tick retries.
+   */
+  private async stateTick(): Promise<void> {
+    try {
+      const state = await prisma.engineState.upsert({
+        where: { id: ENGINE_STATE_ID },
+        update: {
+          heartbeatAt: new Date(),
+          status: this.emergencyStopped ? "emergency_stopped" : "running",
+        },
+        create: { id: ENGINE_STATE_ID, heartbeatAt: new Date(), status: "running" },
+      });
+      this.readOnly = state.readOnly;
+      if (state.controlRequest) {
+        await prisma.engineState.update({
+          where: { id: ENGINE_STATE_ID },
+          data: { controlRequest: null, controlRequestedAt: null },
+        });
+        await this.onControl(state.controlRequest);
+      }
+    } catch (e) {
+      logger.warn("engine", `state tick failed: ${(e as Error).message}`);
+    }
   }
 
   /** Self-scheduling evaluation loop so scannerIntervalSec hot-reloads. */
@@ -163,15 +194,23 @@ class TradingEngine {
     }, intervalMs);
   }
 
-  private onControl(msg: string): void {
-    if (msg === "emergency_stop") {
+  private async onControl(msg: string): Promise<void> {
+    if (msg === "emergency_stop" && !this.emergencyStopped) {
       this.emergencyStopped = true;
-      void redis.set(KEYS.botStatus, "emergency_stopped");
+      await updateEngineState({
+        status: "emergency_stopped",
+        controlRequest: null,
+        controlRequestedAt: null,
+      }).catch(() => {});
       logger.warn("engine", "EMERGENCY STOP received — no new buys; exiting all positions");
       void this.emergencyExitAll();
-    } else if (msg === "resume") {
+    } else if (msg === "resume" && this.emergencyStopped) {
       this.emergencyStopped = false;
-      void redis.set(KEYS.botStatus, "running");
+      await updateEngineState({
+        status: "running",
+        controlRequest: null,
+        controlRequestedAt: null,
+      }).catch(() => {});
       logger.info("engine", "resumed from emergency stop");
     }
   }
@@ -197,20 +236,19 @@ class TradingEngine {
     this.scanTimestamps = this.scanTimestamps.filter((t) => t > cutoff);
     const mem = process.memoryUsage();
 
-    await redis
-      .hset("bot:health", {
-        at: Date.now().toString(),
+    await updateEngineState({
+      health: {
         rpcUrl: this.rpcUrls[this.rpcIndex],
-        rpcLatencyMs: rpcLatencyMs === null ? "" : rpcLatencyMs.toString(),
-        rpcFailures: this.rpcFailures.toString(),
-        scannerLastEventAt: this.scanner.lastActivityAt.toString(),
-        scansPerMin: this.scanTimestamps.length.toString(),
-        watchlistSize: this.watchlist.size.toString(),
-        lastTradeAt: this.lastTradeAt?.toString() ?? "",
-        rssMb: Math.round(mem.rss / 1024 / 1024).toString(),
-        heapMb: Math.round(mem.heapUsed / 1024 / 1024).toString(),
-      })
-      .catch(() => {});
+        rpcLatencyMs,
+        rpcFailures: this.rpcFailures,
+        scannerLastEventAt: this.scanner.lastActivityAt,
+        scansPerMin: this.scanTimestamps.length,
+        watchlistSize: this.watchlist.size,
+        lastTradeAt: this.lastTradeAt,
+        rssMb: Math.round(mem.rss / 1024 / 1024),
+        heapMb: Math.round(mem.heapUsed / 1024 / 1024),
+      },
+    }).catch(() => {});
   }
 
   private async rotateRpc(): Promise<void> {
@@ -250,9 +288,10 @@ class TradingEngine {
     });
   }
 
-  /** Read-only mode: scan and score, but never execute anything. */
-  private async isReadOnly(): Promise<boolean> {
-    return (await redis.get("bot:readOnly").catch(() => null)) === "1";
+  /** Read-only mode: scan and score, but never execute anything.
+   *  The flag lives in EngineState and is refreshed by the 5s state tick. */
+  private isReadOnly(): boolean {
+    return this.readOnly;
   }
 
   private async evaluateWatchlist(): Promise<void> {
@@ -343,7 +382,7 @@ class TradingEngine {
         where: { id: t.tokenId },
         data: { verdict: "BUY_CANDIDATE" },
       });
-      if (await this.isReadOnly()) {
+      if (this.isReadOnly()) {
         logger.info("risk", `read-only mode: would have bought ${t.mint.slice(0, 8)}… (score ${score.total})`);
         return;
       }
@@ -525,19 +564,26 @@ class TradingEngine {
         const price = await getTokenPriceUsd(p.mint);
         if (!price || !p.entryPriceUsd) return; // stale/no price → never act on it
 
-        const peak = Math.max(p.peakPriceUsd ?? price, price);
-        if (peak !== p.peakPriceUsd) {
-          await prisma.position.update({ where: { id: p.id }, data: { peakPriceUsd: peak } });
+        // Track peak / best unrealized gain / deepest drawdown for the
+        // trailing stop and the analytics on every trade record.
+        const excursions = trackExcursions(p.entryPriceUsd, p, price);
+        if (excursions.changed) {
+          await prisma.position.update({ where: { id: p.id }, data: excursions.next });
         }
+        const peak = excursions.next.peakPriceUsd ?? price;
 
-        // liquidity drop since entry → rug signal
+        // liquidity drop since entry → rug signal (baseline stored on the row)
         let liquidityDropPct: number | null = null;
         const liqNow = await getPoolLiquidityUsd(p.mint);
-        const liqKey = `pos:${p.id}:entryLiq`;
         if (liqNow !== null) {
-          const stored = await redis.get(liqKey);
-          if (!stored) await redis.set(liqKey, liqNow.toString(), "EX", 7 * 86400);
-          else liquidityDropPct = ((liqNow - parseFloat(stored)) / parseFloat(stored)) * 100;
+          if (p.entryLiquidityUsd == null) {
+            await prisma.position.update({
+              where: { id: p.id },
+              data: { entryLiquidityUsd: liqNow },
+            });
+          } else if (p.entryLiquidityUsd > 0) {
+            liquidityDropPct = ((liqNow - p.entryLiquidityUsd) / p.entryLiquidityUsd) * 100;
+          }
         }
 
         const decision = evaluateExit(settings, {
@@ -548,7 +594,7 @@ class TradingEngine {
           liquidityDropPct,
         });
         if (decision.exit) {
-          if (await this.isReadOnly()) {
+          if (this.isReadOnly()) {
             logger.warn("risk", `read-only mode: exit signal suppressed for ${p.mint.slice(0, 8)}… (${decision.kind})`);
             return;
           }
@@ -668,7 +714,6 @@ class TradingEngine {
         wins: pnlSol > 0 ? 1 : 0,
         losses: pnlSol <= 0 ? 1 : 0,
       });
-      if (pnlSol <= 0) await redis.set("risk:lastLossAt", Date.now().toString());
       this.lastTradeAt = Date.now();
 
       logger.info("executor", `SELL ${p.mint.slice(0, 8)}… ${kind} pnl ${pnlSol.toFixed(4)} SOL (${latencyMs}ms)`, {
@@ -739,13 +784,18 @@ class TradingEngine {
     const [open, todayStats, lastLoss] = await Promise.all([
       prisma.position.findMany({ where: { status: "OPEN" } }),
       prisma.dailyStats.findUnique({ where: { date: todayUtc() } }),
-      redis.get("risk:lastLossAt"),
+      // Loss-cooldown anchor: most recent losing close (survives restarts).
+      prisma.position.findFirst({
+        where: { status: "CLOSED", pnlSol: { lte: 0 } },
+        orderBy: { closedAt: "desc" },
+        select: { closedAt: true },
+      }),
     ]);
     return {
       openPositions: open.length,
       exposureSol: open.reduce((a, p) => a + p.entrySol, 0),
       dailyRealizedSol: todayStats?.realizedSol ?? 0,
-      lastLossAt: lastLoss ? new Date(parseInt(lastLoss, 10)) : null,
+      lastLossAt: lastLoss?.closedAt ?? null,
       emergencyStopped: this.emergencyStopped,
     };
   }
@@ -807,6 +857,21 @@ function normalizeDelta(d: Record<string, number | undefined>) {
 }
 
 // ── entrypoint ──────────────────────────────────────────────────────────────
+
+// @solana/web3.js prints every websocket reconnect failure straight to
+// console.error ("ws error: …") with no way to configure it, flooding logs
+// during an RPC outage. Throttle that one message to once per minute; every
+// other console.error passes through untouched (the health probe still
+// surfaces RPC trouble on the dashboard).
+const rawConsoleError = console.error.bind(console);
+let lastWsErrorAt = 0;
+console.error = (...args: unknown[]) => {
+  if (typeof args[0] === "string" && args[0].startsWith("ws error")) {
+    if (Date.now() - lastWsErrorAt < 60_000) return;
+    lastWsErrorAt = Date.now();
+  }
+  rawConsoleError(...args);
+};
 
 validateEnv("engine");
 const engine = new TradingEngine();

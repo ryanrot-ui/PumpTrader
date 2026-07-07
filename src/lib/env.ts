@@ -8,7 +8,9 @@ import { z } from "zod";
 
 const common = z.object({
   DATABASE_URL: z.string().url().or(z.string().startsWith("postgresql://")),
-  REDIS_URL: z.string().min(1),
+  // Optional: pub/sub fast path + shared rate-limit counters. Everything
+  // falls back to database polling / in-memory counters without it.
+  REDIS_URL: z.string().min(1).optional(),
 });
 
 const engineExtra = z.object({
