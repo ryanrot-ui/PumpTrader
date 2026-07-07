@@ -1,12 +1,15 @@
 # ── Trading engine worker ───────────────────────────────────────────────────
-FROM node:22-alpine
+# Debian-slim for the same Prisma/OpenSSL reliability reasons as the web image.
+FROM node:22-slim
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma
 RUN npm ci --no-audit --no-fund && npx prisma generate
 COPY tsconfig.json vitest.config.ts ./
 COPY src ./src
-# tsx runs the TypeScript worker directly; restart: always in compose gives
-# automatic crash recovery (state is rebuilt from Postgres on boot). The
-# schema push is idempotent — safe even when the web service also runs it.
-CMD ["sh", "-c", "npx prisma db push --skip-generate && npx tsx src/engine/index.ts"]
+COPY docker-entrypoint-engine.sh ./docker-entrypoint-engine.sh
+RUN chmod +x ./docker-entrypoint-engine.sh
+# Idempotent schema push then the worker. restart policy in railway.engine.json
+# / compose gives automatic crash recovery (state rebuilt from Postgres on boot).
+CMD ["./docker-entrypoint-engine.sh"]

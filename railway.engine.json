@@ -5,7 +5,6 @@
     "dockerfilePath": "Dockerfile.engine"
   },
   "deploy": {
-    "startCommand": "npx prisma db push --skip-generate && npx tsx src/engine/index.ts",
     "restartPolicyType": "ALWAYS",
     "restartPolicyMaxRetries": 10
   }
