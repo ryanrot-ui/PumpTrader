@@ -1,0 +1,48 @@
+# Render Blueprint — deploys the full platform in one click:
+#   web    — Next.js dashboard + API (Docker)
+#   worker — trading engine (Docker)
+#
+# Database: Neon PostgreSQL (https://neon.tech). Create a free Neon project,
+# copy its pooled connection string, and paste it when Render prompts for
+# DATABASE_URL. The containers apply the Prisma schema automatically on boot —
+# there is no manual database setup.
+#
+# Redis is OPTIONAL and not provisioned here: the app coordinates through the
+# database. If you later add a Redis instance (e.g. Render Key Value), set
+# REDIS_URL on both services to enable the instant pub/sub fast path.
+
+services:
+  - type: web
+    name: pumptrader-web
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /api/healthz
+    envVars:
+      - key: DATABASE_URL # Neon pooled connection string (postgresql://…)
+        sync: false
+      - key: NEXTAUTH_SECRET
+        generateValue: true
+      # NEXTAUTH_URL is derived from RENDER_EXTERNAL_URL automatically; set it
+      # explicitly only if you serve the app from a custom domain.
+      - key: WALLET_ENCRYPTION_KEY # openssl rand -hex 32 (64 hex chars)
+        sync: false
+      - key: SOLANA_RPC_URL # dedicated RPC strongly recommended (Helius/QuickNode)
+        sync: false
+
+  - type: worker
+    name: pumptrader-engine
+    runtime: docker
+    dockerfilePath: ./Dockerfile.engine
+    plan: starter
+    envVars:
+      - key: DATABASE_URL # same Neon connection string as the web service
+        sync: false
+      - key: WALLET_ENCRYPTION_KEY # must match the web service exactly
+        sync: false
+      - key: SOLANA_RPC_URL
+        sync: false
+      - key: SOLANA_WS_URL # optional: wss endpoint for the migration scanner
+        sync: false
+      - key: HELIUS_API_KEY # optional: enables holder-count metrics
+        sync: false

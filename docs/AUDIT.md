@@ -1,5 +1,41 @@
 # Production Audit Report — PumpTrader
 
+> **Addendum — second hardening round (2026-07).** Changes since the original
+> audit below:
+>
+> - **Redis is now optional.** The database became the single source of truth
+>   for engine coordination via a new `EngineState` row (status, heartbeat,
+>   health telemetry, read-only flag, control queue). Settings hot-reload,
+>   emergency stop, health strip and the live feed all work Redis-free on
+>   short DB polling; `REDIS_URL` re-enables the instant pub/sub fast path.
+>   Rate limiting and login lockout fall back to in-memory counters. Redis
+>   outages log exactly one line per connection (and one on recovery) — no
+>   spam. The loss-cooldown anchor and the rug-detection liquidity baseline
+>   moved from Redis keys to the database (`Position.entryLiquidityUsd`), so
+>   they survive restarts.
+> - **Paper ↔ Live switching is server-enforced.** A dedicated
+>   `set_mode` API action requires `confirmLive: true` (set only by the
+>   dashboard's confirmation dialog) *and* an imported bot wallet before live
+>   mode engages; the settings form can no longer flip the mode (schema omits
+>   it). The mode persists per user and hot-reloads into the engine.
+> - **Per-position excursion analytics.** `maxUnrealizedPnlPct` and
+>   `maxDrawdownPct` are tracked on every monitor tick (unit-tested pure
+>   function) and shown in the position detail view. `/api/stats` gained a
+>   paper/live/all mode filter, monthly/weekly/daily profit windows, win/loss
+>   counts, success rate, average ROI and an equity curve derived from closed
+>   positions.
+> - **Deployment cleaned up.** Railway configs and a manually-added
+>   `prisma db push --accept-data-loss` debug hack were removed; the
+>   entrypoints run a plain, non-destructive `db push` (idempotent, automatic
+>   schema init). Added `render.yaml` (web + worker) with Neon PostgreSQL,
+>   an unauthenticated `/api/healthz` probe for platform health checks, and
+>   automatic `NEXTAUTH_URL` derivation from `RENDER_EXTERNAL_URL`.
+> - **Fixes:** unauthenticated visitors are now redirected to `/login`
+>   (middleware previously sent them to NextAuth's unstyled default page);
+>   web3.js websocket reconnect noise is throttled to one line/minute; dead
+>   config (`TRADING_MODE`, `engine:paper`) and a stray 5 MB upload artifact
+>   were removed.
+
 **Scope:** full engineering + security audit of the Pump.fun migration trading
 platform prior to live deployment. Covers trading correctness, security,
 reliability, performance, and observability. This report lists what was

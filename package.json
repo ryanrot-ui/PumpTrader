@@ -2,7 +2,7 @@
   "name": "pumpfun-migration-trader",
   "version": "1.0.0",
   "private": true,
-  "description": "Automated trading platform for newly migrated Pump.fun tokens on Raydium — scanner, scoring engine, risk-managed executor, and dashboard.",
+  "description": "Solana meme coin trading platform — Pump.fun migration scanner, scoring engine, risk-managed paper/live executor, and analytics dashboard.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -10,7 +10,6 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "engine": "tsx src/engine/index.ts",
-    "engine:paper": "TRADING_MODE=paper tsx src/engine/index.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:push": "prisma db push",
