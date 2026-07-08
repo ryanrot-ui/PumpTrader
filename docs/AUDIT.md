@@ -1,5 +1,60 @@
 # Production Audit Report — PumpTrader
 
+> **Addendum — eighth round: Netlify serverless architecture (2026-07).**
+>
+> The platform now deploys directly from GitHub to Netlify — no Docker, no
+> Render, no shell access, no manual database commands (all Docker/Render
+> artifacts removed).
+>
+> - **Build pipeline** (`scripts/netlify-build.mjs` + `netlify.toml`):
+>   validates required env vars with actionable messages (a misconfigured
+>   deploy fails at build time, never at runtime), derives the Neon direct
+>   endpoint from a pooled `DATABASE_URL`, applies the schema
+>   (`prisma db push`, idempotent, retried through Neon cold starts), then
+>   builds. Prisma ships the `rhel-openssl-3.0.x` engine for Netlify's
+>   Lambda runtime.
+> - **Engine redesign for serverless:** `TradingEngine` extracted
+>   (`src/engine/engine.ts`) with two bounded execution modes sharing all
+>   logic with the long-running worker: `runFor(ms)` — full fidelity (5s
+>   position monitoring, poll-only scanner with a DB-persisted cursor,
+>   hot-reloading settings) inside a Background Function for ~13-minute
+>   cycles — and `runOnce(budget)` — a degraded per-minute pass (exits
+>   first) inside the scheduled function when Background Functions are
+>   unavailable. A per-minute scheduled function (`engine-tick`) relaunches
+>   the runner when the **atomic DB lease** (conditional update on
+>   EngineState) is free; concurrent engines that could double-sell are
+>   impossible by construction. Emergency stop persists across cycle
+>   boundaries and re-fires unfinished exits on recovery.
+> - **Serverless correctness fix (high):** the manual-trade pending-build
+>   registry was in-memory; on serverless the build and submit steps can hit
+>   different instances, so manual Phantom trades would always fail — and
+>   the single-submit guarantee held only per instance. Moved to a
+>   `PendingManualTrade` table consumed by an atomic row delete
+>   (exactly-once submit now holds across any number of instances).
+> - **NextAuth on Netlify:** `NEXTAUTH_URL` defaults from the
+>   platform-provided `URL`/`DEPLOY_PRIME_URL`; explicit configuration wins
+>   (custom domains). Secure cookies unchanged.
+> - **SSE feed:** first event now sent on connect so response headers flush
+>   immediately through serverless/proxy layers; EventSource reconnection
+>   covers bounded function lifetimes.
+> - **Verified** (fresh Postgres 16, empty database): build-time env
+>   validation failure modes; schema auto-applied by the build (13 tables);
+>   register → duplicate blocked → login → session → protected routes →
+>   all API routes authenticated (200) and anonymous (307); SSE first-byte;
+>   engine lease claim/contend, `runOnce`, `runFor` (status running
+>   mid-cycle → idle after), emergency-stop persistence, zero live trades;
+>   scheduled-tick handler (inline fallback + runner-active no-op) and
+>   runner handler (403 without secret, lease-contended no-op); both
+>   functions bundle with esbuild; 93/93 unit tests, strict typecheck,
+>   production build.
+> - **Known trade-offs (documented in DEPLOY-NETLIFY.md):** up to ~1 minute
+>   between engine cycles with Background Functions (positions unmonitored
+>   in the gap); once-per-minute monitoring in degraded mode; per-instance
+>   rate-limit counters without Redis; manual-trade confirmation can exceed
+>   the function limit on slow RPCs (transaction still lands; reconciler
+>   picks it up). For constant 5s monitoring, `npm run engine` on any VPS
+>   coexists with the Netlify site — the lease arbitrates automatically.
+
 > **Addendum — seventh round: zero-config Neon bootstrap + fresh-deploy
 > re-verification (2026-07).**
 >

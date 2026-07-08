@@ -110,7 +110,7 @@ export async function POST(req: Request) {
     // Register this exact transaction so /submit only relays what we built
     // here (and each build can be submitted at most once).
     const unsigned = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
-    registerBuiltTx(txMessageHash(unsigned.message.serialize()), {
+    await registerBuiltTx(txMessageHash(unsigned.message.serialize()), {
       userId: user.id,
       mint,
       side,

@@ -65,6 +65,9 @@ export async function GET() {
         }, DB_POLL_MS);
       }
 
+      // Immediate first byte: flushes response headers through
+      // serverless/proxy layers so the client sees the stream open at once.
+      send(JSON.stringify({ ping: Date.now() }));
       ping = setInterval(() => send(JSON.stringify({ ping: Date.now() })), 25_000);
     },
     cancel() {

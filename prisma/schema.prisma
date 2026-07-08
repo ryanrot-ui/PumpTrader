@@ -1,5 +1,9 @@
 generator client {
   provider = "prisma-client-js"
+  // "native" builds for the local/dev machine; rhel-openssl-3.0.x is the
+  // AWS-Lambda runtime Netlify Functions execute on — without it the query
+  // engine binary is missing in production and every DB call fails.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
@@ -9,8 +13,9 @@ datasource db {
   // Schema application (`prisma db push`) needs a DIRECT connection: Neon's
   // pooled endpoint (PgBouncer) cannot take the advisory lock / run the DDL
   // that push requires, which silently leaves the database with no tables.
-  // DIRECT_URL should be the non-pooled Neon URL (host without `-pooler`).
-  // Falls back to DATABASE_URL when unset (e.g. plain Postgres in Docker).
+  // DIRECT_URL should be the non-pooled Neon URL (host without `-pooler`);
+  // the Netlify build script derives it automatically. Falls back to
+  // DATABASE_URL when unset (plain Postgres).
   directUrl = env("DIRECT_URL")
 }
 
@@ -303,7 +308,26 @@ model EngineState {
   // app; the engine consumes and clears it within one poll interval.
   controlRequest     String?
   controlRequestedAt DateTime?
+  // Migration-scanner catch-up cursor (most recent processed signature).
+  // Persisted so serverless engine cycles resume scanning where the previous
+  // cycle stopped instead of re-fetching the same transactions.
+  scannerCursor      String?
   updatedAt          DateTime @updatedAt
+}
+
+// Pending manual-trade builds: binds the submit step to a transaction the
+// server built (SHA-256 of the unsigned message). Database-backed so it works
+// across serverless function instances; consumed atomically (row delete) so a
+// signed transaction can be submitted exactly once.
+model PendingManualTrade {
+  hash      String   @id
+  userId    String
+  mint      String
+  side      String // buy | sell
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
 }
 
 // ── Logging & metrics ───────────────────────────────────────────────────────

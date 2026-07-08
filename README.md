@@ -37,9 +37,12 @@ profit by default**.
   Photon/Axiom-inspired dashboard. Mobile responsive.
 - **Backend API** — Next.js route handlers: auth, settings, wallets, tokens,
   positions, trades, stats, logs, bot control, SSE live feed.
-- **Trading engine** — standalone worker (`npm run engine`), communicates with the
-  web app only through Postgres (plus optional Redis pub/sub), so either side can
-  restart independently.
+- **Trading engine** — communicates with the web app only through Postgres
+  (plus optional Redis pub/sub), so either side can restart independently.
+  Runs two ways from the same code: as bounded serverless cycles on Netlify
+  (scheduled + background functions, see `netlify/functions/`), or as a
+  long-running worker (`npm run engine`) on any host that keeps a process
+  alive. A database lease guarantees only one engine is ever active.
 - **Database** — PostgreSQL via Prisma: users, wallets, settings, engine state
   (status/heartbeat/health/control), detected tokens, score records (full
   breakdowns), snapshots, trades, positions, logs, daily stats. The schema is
@@ -51,29 +54,29 @@ profit by default**.
 
 ## Quick start
 
+### Deploying to Netlify + Neon (recommended)
+
+Deploy directly from GitHub — no Docker, no shell access, no manual database
+commands. The build validates your environment variables (failing with clear
+instructions if something is missing), applies the database schema
+automatically, and the trading engine runs as Netlify scheduled/background
+functions: see [`docs/DEPLOY-NETLIFY.md`](docs/DEPLOY-NETLIFY.md).
+
+### Local development
+
 ```bash
 cp .env.example .env
-# fill in: NEXTAUTH_SECRET (openssl rand -base64 32),
+# fill in: DATABASE_URL (any local or hosted PostgreSQL),
+#          NEXTAUTH_SECRET (openssl rand -base64 32),
 #          WALLET_ENCRYPTION_KEY (openssl rand -hex 32),
 #          SOLANA_RPC_URL / SOLANA_WS_URL (a dedicated RPC — Helius, Triton,
 #          QuickNode; the public endpoint rate-limits the scanner immediately)
 
-docker compose up -d postgres   # (optionally: postgres redis)
 npm install
 npx prisma db push        # create schema
 npm run dev               # web app on :3000
 npm run engine            # trading engine worker (separate terminal)
 ```
-
-Or run the whole stack in Docker: `docker compose up --build` (includes nightly
-Postgres backups to `./backups`, and `restart: always` gives the engine automatic
-crash recovery — it rebuilds its watchlist and open positions from Postgres on boot).
-
-### Deploying to Render + Neon
-
-One-click Blueprint deployment (web + engine worker, Neon PostgreSQL, automatic
-schema initialization, no manual database steps):
-see [`docs/DEPLOY-RENDER.md`](docs/DEPLOY-RENDER.md).
 
 Create the **administrator account** at `http://localhost:3000/register` (works
 exactly once — registration is permanently disabled after the admin exists;
@@ -161,7 +164,8 @@ slippage haircut, using the identical decision pipeline).
   parameterized queries; XSS by React escaping; rate limiting on sensitive
   endpoints (Redis-backed when configured, in-memory otherwise).
 - `npm audit --omit=dev`: 0 known vulnerabilities at time of audit.
-- Nightly automated Postgres backups (docker compose `backup` service).
+- Backups: Neon keeps point-in-time restore history; schedule an off-platform
+  `pg_dump` for belt-and-braces.
 - Full audit report: [`docs/AUDIT.md`](docs/AUDIT.md) — read the "manual
   verification" list before trading real funds.
 

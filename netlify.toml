@@ -1,0 +1,29 @@
+# Netlify configuration — deploy directly from GitHub, no Docker, no shell.
+#
+#   Web app          → Netlify Next.js Runtime (API routes become functions)
+#   Trading engine   → netlify/functions/engine-tick.mts (scheduled, every
+#                      minute) relaunches engine-runner-background.mts
+#                      (Background Function, ~13-minute full-fidelity cycles)
+#   Database schema  → applied automatically during the build
+#                      (scripts/netlify-build.mjs), never manually
+#
+# Required environment variables (Site configuration → Environment variables):
+#   DATABASE_URL           Neon/PostgreSQL connection string (pooled is fine)
+#   NEXTAUTH_SECRET        openssl rand -base64 32
+#   WALLET_ENCRYPTION_KEY  openssl rand -hex 32
+# Recommended:
+#   SOLANA_RPC_URL         dedicated RPC endpoint (Helius/Triton/QuickNode)
+# The build fails with a clear message if a required variable is missing.
+
+[build]
+  command = "node scripts/netlify-build.mjs"
+  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  # Prisma's query engine is a native binary the bundler cannot trace.
+  included_files = ["node_modules/.prisma/client/**", "prisma/schema.prisma"]

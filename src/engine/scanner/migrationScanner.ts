@@ -32,10 +32,25 @@ export interface MigrationEvent {
 
 export type MigrationHandler = (event: MigrationEvent) => void | Promise<void>;
 
+export interface ScannerOptions {
+  /**
+   * Skip the WebSocket subscription and rely on signature polling alone.
+   * Used by bounded serverless engine cycles, where a subscription would be
+   * torn down every few minutes anyway; polling with a persisted cursor
+   * catches every migration across cycles.
+   */
+  pollOnly?: boolean;
+  /** Resume polling after this signature (persisted cursor). */
+  initialCursor?: string | null;
+  /** Called whenever the poll cursor advances, so callers can persist it. */
+  onCursor?: (signature: string) => void | Promise<void>;
+}
+
 export class MigrationScanner {
   private conn: Connection;
   private handler: MigrationHandler;
   private onError: (err: Error, ctx: string) => void;
+  private opts: ScannerOptions;
   private subId: number | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private watchdogTimer: NodeJS.Timeout | null = null;
@@ -48,16 +63,19 @@ export class MigrationScanner {
   constructor(
     conn: Connection,
     handler: MigrationHandler,
-    onError: (err: Error, ctx: string) => void = () => {}
+    onError: (err: Error, ctx: string) => void = () => {},
+    opts: ScannerOptions = {}
   ) {
     this.conn = conn;
     this.handler = handler;
     this.onError = onError;
+    this.opts = opts;
+    this.lastPolledSig = opts.initialCursor ?? undefined;
   }
 
   async start(): Promise<void> {
     this.stopped = false;
-    this.subscribe();
+    if (!this.opts.pollOnly) this.subscribe();
     // Poll every 30s as a safety net for missed WebSocket events
     this.pollTimer = setInterval(() => {
       this.pollRecent()
@@ -67,12 +85,20 @@ export class MigrationScanner {
     // Watchdog: if the WebSocket has been silent for 10 minutes, assume the
     // subscription died quietly and rebuild it (web3.js does not always
     // surface a dead upstream socket as an error).
-    this.watchdogTimer = setInterval(() => {
-      if (Date.now() - this.lastActivityAt > 10 * 60_000) {
-        this.onError(new Error("no scanner activity for 10m — resubscribing"), "watchdog");
-        void this.resubscribe();
-      }
-    }, 60_000);
+    if (!this.opts.pollOnly) {
+      this.watchdogTimer = setInterval(() => {
+        if (Date.now() - this.lastActivityAt > 10 * 60_000) {
+          this.onError(new Error("no scanner activity for 10m — resubscribing"), "watchdog");
+          void this.resubscribe();
+        }
+      }, 60_000);
+    }
+  }
+
+  /** One catch-up poll — for bounded engine ticks that own their own cadence. */
+  async pollOnce(): Promise<void> {
+    await this.pollRecent();
+    this.lastActivityAt = Date.now();
   }
 
   async stop(): Promise<void> {
@@ -129,7 +155,10 @@ export class MigrationScanner {
       { limit: 25, until: this.lastPolledSig },
       "confirmed"
     );
-    if (sigs.length > 0) this.lastPolledSig = sigs[0].signature;
+    if (sigs.length > 0) {
+      this.lastPolledSig = sigs[0].signature;
+      if (this.opts.onCursor) await this.opts.onCursor(sigs[0].signature);
+    }
     for (const s of sigs.reverse()) {
       if (s.err) continue;
       await this.processSignature(s.signature);

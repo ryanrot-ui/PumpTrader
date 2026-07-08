@@ -21,7 +21,6 @@ const csp = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  output: "standalone",
   // Native addon (argon2) must not be bundled by webpack
   serverExternalPackages: ["@node-rs/argon2"],
   headers: async () => [

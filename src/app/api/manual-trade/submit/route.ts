@@ -46,7 +46,7 @@ export async function POST(req: Request) {
 
   // Must be a transaction this server built in step 1, unconsumed, for this
   // user. Signing does not change the message, so the hash matches.
-  const built = consumeBuiltTx(txMessageHash(tx.message.serialize()), user.id);
+  const built = await consumeBuiltTx(txMessageHash(tx.message.serialize()), user.id);
   if (!built) {
     return NextResponse.json(
       { error: "Unknown or already-submitted transaction — rebuild the trade and try again" },

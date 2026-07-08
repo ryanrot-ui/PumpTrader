@@ -7,6 +7,11 @@ import { prisma } from "./prisma";
 import { clearWindow, incrementWindow, readWindow } from "./rateLimit";
 import { decryptSecret } from "./crypto";
 import { verifyTotp } from "./totp";
+import { applyPlatformEnvDefaults } from "./env";
+
+// On Netlify the public site URL arrives as URL, not NEXTAUTH_URL — default
+// it before NextAuth (and useSecureCookies below) reads it.
+applyPlatformEnvDefaults();
 
 /**
  * Authentication hardening:
