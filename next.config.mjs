@@ -21,10 +21,9 @@ const csp = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // `standalone` is for the Docker image (Render). On Netlify the official
-  // Next.js runtime provides its own adapter and rejects a forced output mode,
-  // so leave it default there.
-  output: process.env.NETLIFY ? undefined : "standalone",
+  // Standalone output: a self-contained server bundle for the Docker image
+  // (Render web service). `next build` emits .next/standalone/server.js.
+  output: "standalone",
   // Native addon (argon2) must not be bundled by webpack
   serverExternalPackages: ["@node-rs/argon2"],
   headers: async () => [

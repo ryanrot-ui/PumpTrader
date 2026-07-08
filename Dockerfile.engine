@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-cert
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma
 RUN npm ci --no-audit --no-fund && npx prisma generate
+# Set production AFTER npm ci so devDependencies (tsx, used to run the TS engine)
+# are still installed above, but the process runs in production mode.
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 COPY tsconfig.json vitest.config.ts ./
 COPY src ./src
 COPY docker-entrypoint-engine.sh ./docker-entrypoint-engine.sh

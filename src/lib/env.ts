@@ -14,7 +14,10 @@ const common = z.object({
 });
 
 const engineExtra = z.object({
-  SOLANA_RPC_URL: z.string().url(),
+  // Optional: falls back to the public mainnet endpoint via rpcEndpoints().
+  // A dedicated RPC is strongly recommended for real use (the public one is
+  // heavily rate-limited), but the engine must boot without any RPC config.
+  SOLANA_RPC_URL: z.string().url().optional(),
   SOLANA_WS_URL: z.string().optional(),
   // comma-separated failover RPC endpoints (optional)
   SOLANA_RPC_URLS: z.string().optional(),
@@ -41,6 +44,13 @@ export function validateEnv(kind: "engine" | "web"): void {
   const key = process.env.WALLET_ENCRYPTION_KEY;
   if (key && !/^[0-9a-fA-F]{64}$/.test(key)) {
     throw new Error("WALLET_ENCRYPTION_KEY must be 64 hex chars (openssl rand -hex 32)");
+  }
+
+  if (kind === "engine" && !process.env.SOLANA_RPC_URL) {
+    console.warn(
+      "[env] SOLANA_RPC_URL not set — using the public mainnet endpoint " +
+        "(rate-limited). Set a dedicated RPC (Helius/QuickNode/Triton) for real use."
+    );
   }
 }
 

@@ -1,17 +1,27 @@
 # Render Blueprint — deploys the full platform in one click:
-#   web    — Next.js dashboard + API (Docker)
-#   worker — trading engine (Docker)
+#   web    — Next.js dashboard + API   (Docker)
+#   worker — 24/7 trading engine       (Docker)
 #
-# Database: Neon PostgreSQL (https://neon.tech). Create a free Neon project,
-# copy its pooled connection string, and paste it when Render prompts for
-# DATABASE_URL. The containers apply the Prisma schema automatically on boot —
-# there is no manual database setup.
+# Both services share ONE PostgreSQL database. Redis is OPTIONAL (the app
+# coordinates through the database); add REDIS_URL later to enable the pub/sub
+# fast path.
 #
-# Redis is OPTIONAL and not provisioned here: the app coordinates through the
-# database. If you later add a Redis instance (e.g. Render Key Value), set
-# REDIS_URL on both services to enable the instant pub/sub fast path.
+# HOW TO DEPLOY
+#   1. Push this repo to GitHub.
+#   2. Render dashboard → New → Blueprint → pick this repo. Render reads this file.
+#   3. When prompted, paste ONE value: DATABASE_URL (your PostgreSQL connection
+#      string — Neon's free tier works well). NEXTAUTH_SECRET is generated for
+#      you. Everything else is optional (see below).
+#   4. Click Apply. The containers apply the Prisma schema automatically on boot,
+#      so a brand-new empty database works with zero manual commands.
+#
+# NEON NOTE: paste Neon's default (pooled) string as DATABASE_URL. The schema is
+# applied over a DIRECT connection that the containers auto-derive by removing
+# "-pooler" from the host — you do NOT need to set DIRECT_URL yourself. Only set
+# DIRECT_URL if your pooled and direct hosts differ by more than "-pooler".
 
 services:
+  # ── Web: dashboard + API + auth ──────────────────────────────────────────
   - type: web
     name: pumptrader-web
     runtime: docker
@@ -19,38 +29,37 @@ services:
     plan: starter
     healthCheckPath: /api/healthz
     envVars:
-      - key: DATABASE_URL # Neon POOLED connection string (host contains -pooler)
+      - key: DATABASE_URL # REQUIRED. PostgreSQL connection string (Neon pooled URL is fine).
         sync: false
-      - key: DIRECT_URL # Neon NON-POOLED string (same, without -pooler) — used
-        sync: false #      only to apply the schema; required on Neon
-      - key: NEXTAUTH_SECRET
+      - key: NEXTAUTH_SECRET # generated automatically; no action needed.
         generateValue: true
-      # NEXTAUTH_URL is derived from RENDER_EXTERNAL_URL automatically; set it
-      # explicitly only if you serve the app from a custom domain.
-      - key: WALLET_ENCRYPTION_KEY # openssl rand -hex 32 (64 hex chars)
+      # NEXTAUTH_URL is derived from Render's RENDER_EXTERNAL_URL automatically;
+      # set it explicitly only when serving from a custom domain.
+      # DIRECT_URL is auto-derived from DATABASE_URL (strip "-pooler"); set it
+      # only if your direct host differs by more than that.
+      - key: WALLET_ENCRYPTION_KEY # OPTIONAL — needed only to import a live-trading wallet. openssl rand -hex 32
         sync: false
-      - key: SOLANA_RPC_URL # dedicated RPC strongly recommended (Helius/QuickNode)
+      - key: SOLANA_RPC_URL # OPTIONAL — dedicated RPC recommended (Helius/QuickNode). Defaults to public mainnet.
         sync: false
 
+  # ── Worker: the trading engine (runs 24/7) ───────────────────────────────
   - type: worker
     name: pumptrader-engine
     runtime: docker
     dockerfilePath: ./Dockerfile.engine
     plan: starter
     envVars:
-      - key: DATABASE_URL # same Neon pooled connection string as the web service
+      - key: DATABASE_URL # REQUIRED — the SAME connection string as the web service.
         sync: false
-      - key: DIRECT_URL # same non-pooled string as the web service
+      - key: WALLET_ENCRYPTION_KEY # must match the web service. Required only for LIVE trading.
         sync: false
-      - key: WALLET_ENCRYPTION_KEY # must match the web service exactly
+      - key: SOLANA_RPC_URL # OPTIONAL — defaults to public mainnet (rate-limited).
         sync: false
-      - key: SOLANA_RPC_URL
+      - key: SOLANA_WS_URL # OPTIONAL — wss endpoint for the migration scanner.
         sync: false
-      - key: SOLANA_WS_URL # optional: wss endpoint for the migration scanner
+      - key: HELIUS_API_KEY # OPTIONAL — enables holder-count metrics.
         sync: false
-      - key: HELIUS_API_KEY # optional: enables holder-count metrics
+      - key: ANTHROPIC_API_KEY # OPTIONAL — AI meme-quality assessment.
         sync: false
-      - key: ANTHROPIC_API_KEY # optional: AI meme-quality assessment
-        sync: false
-      - key: TWITTER_BEARER_TOKEN # optional: X mention counts (paid API tier)
+      - key: TWITTER_BEARER_TOKEN # OPTIONAL — X mention counts (paid API tier).
         sync: false

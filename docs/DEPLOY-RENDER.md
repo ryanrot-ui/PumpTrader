@@ -8,43 +8,42 @@ idempotent and non-destructive), so **there is no manual database setup**.
 ## 1. Create the database (Neon)
 
 1. Create a project at <https://neon.tech> (free tier works).
-2. From the Neon dashboard copy **two** connection strings for the same
-   database:
-   - **Pooled** (host contains `-pooler`) → use as `DATABASE_URL`. This is the
-     app's runtime connection.
-   - **Direct / non-pooled** (same string without `-pooler`) → use as
-     `DIRECT_URL`. This is used **only** to apply the schema at boot.
+2. Copy the **pooled** connection string (the default Neon gives you; its host
+   contains `-pooler`). That single string is your `DATABASE_URL` — you do
+   **not** need to copy a second one.
 
-   > **Why both are required on Neon.** `prisma db push` (which creates the
-   > tables automatically) needs a *direct* connection — it takes a Postgres
-   > advisory lock and runs DDL that Neon's PgBouncer pooler cannot handle.
-   > If `DIRECT_URL` is missing (or also points at the pooler), the schema
-   > push fails, the database is left with **no tables**, and registration
-   > errors with `table public.User does not exist`. With `DIRECT_URL` set to
-   > the non-pooled endpoint, the container applies the full schema on first
-   > boot and refuses to start if it can't — so you never serve an
-   > un-initialized app. Plain (non-Neon) Postgres needs only `DATABASE_URL`;
-   > `DIRECT_URL` falls back to it automatically.
+   > **Neon and the schema push, explained.** `prisma db push` (which creates
+   > the tables automatically on boot) needs a *direct* connection — it takes a
+   > Postgres advisory lock and runs DDL that Neon's PgBouncer pooler cannot
+   > handle. The containers derive that direct connection for you by removing
+   > `-pooler` from `DATABASE_URL`, so schema init works with **only
+   > `DATABASE_URL` set**. If your pooled and direct hosts happen to differ by
+   > more than `-pooler`, set `DIRECT_URL` explicitly to the non-pooled URL;
+   > otherwise leave it unset. Plain (non-Neon) Postgres also needs only
+   > `DATABASE_URL`. The container refuses to start if the schema can't apply,
+   > so you never serve an un-initialized app.
 
 ## 2. Deploy the Blueprint
 
 1. Push this repository to GitHub.
 2. In Render: **New → Blueprint**, select the repo. Render reads `render.yaml`
    and creates `pumptrader-web` (web) and `pumptrader-engine` (worker).
-3. When prompted, fill in the environment variables:
+3. When prompted, fill in the environment variables. **Only `DATABASE_URL` is
+   required** — everything else is generated for you or optional:
 
-   | Variable | Service(s) | Value |
-   |---|---|---|
-   | `DATABASE_URL` | both | the Neon **pooled** connection string (host has `-pooler`) |
-   | `DIRECT_URL` | both | the Neon **non-pooled** string (same, without `-pooler`) — required so the schema applies |
-   | `NEXTAUTH_SECRET` | web | generated automatically by Render |
-   | `WALLET_ENCRYPTION_KEY` | both (**must match**) | `openssl rand -hex 32` |
-   | `SOLANA_RPC_URL` | both | a dedicated RPC (Helius/Triton/QuickNode). The public endpoint rate-limits the scanner within seconds. |
-   | `SOLANA_WS_URL` | engine, optional | the matching `wss://` endpoint |
-   | `HELIUS_API_KEY` | engine, optional | enables holder-count metrics (without it, `minHolders` rejects everything — safe, but the bot won't buy) |
+   | Variable | Service(s) | Required? | Value |
+   |---|---|---|---|
+   | `DATABASE_URL` | both | **Yes** | the Neon **pooled** connection string (paste the same value on both services) |
+   | `NEXTAUTH_SECRET` | web | No — auto-generated | Render fills this in via `generateValue`; no action needed |
+   | `WALLET_ENCRYPTION_KEY` | both (**must match**) | Only for **live** trading | `openssl rand -hex 32` (64 hex chars). Leave blank for paper trading. |
+   | `SOLANA_RPC_URL` | both | No — recommended | a dedicated RPC (Helius/Triton/QuickNode). Defaults to the public mainnet endpoint, which rate-limits the scanner within seconds. |
+   | `SOLANA_WS_URL` | engine | No | the matching `wss://` endpoint for the migration scanner |
+   | `HELIUS_API_KEY` | engine | No | enables holder-count metrics (without it, `minHolders` rejects everything — safe, but the bot won't buy) |
+   | `DIRECT_URL` | both | No — auto-derived | only if your direct host differs from the pooled host by more than `-pooler` |
 
-4. Deploy. First boot: the container applies the schema to Neon, the health
-   check (`/api/healthz`) goes green, and `https://<your-app>.onrender.com/register`
+4. Click **Apply**. First boot: each container applies the schema to Neon (a
+   fresh, empty database is fine — no manual commands), the web health check
+   (`/api/healthz`) goes green, and `https://<your-app>.onrender.com/register`
    serves the one-time administrator signup.
 
 `NEXTAUTH_URL` is derived automatically from Render's `RENDER_EXTERNAL_URL`;
@@ -115,6 +114,11 @@ login page.
 - **Scaling:** run exactly **one** engine instance. The web service is
   stateless and may scale horizontally (rate-limit counters are per-instance
   unless Redis is configured).
+- **Restarts & graceful shutdown:** on deploy/restart Render sends `SIGTERM`;
+  the engine finishes in-flight work, closes the database, and exits cleanly,
+  then rebuilds its watchlist and open positions from PostgreSQL on the next
+  boot. A DB-unique open-position key prevents duplicate buys across restarts.
+  The engine reconnects to Solana RPC automatically on transient failures.
 - **Schema updates:** deploys apply additive schema changes automatically. A
   deliberately destructive schema change (dropping/renaming columns) is
   refused by `db push` at boot — perform such migrations manually with
