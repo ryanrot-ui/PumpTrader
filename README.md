@@ -21,8 +21,8 @@ profit by default**.
 ```
 ┌────────────┐        ┌──────────────┐        ┌─────────────────────────────┐
 │  Next.js   │        │  PostgreSQL  │        │        Trading Engine        │
-│  frontend  │◄──────►│   (Prisma)   │◄──────►│  (separate Node worker)      │
-│  + API     │        │ source of    │        │                              │
+│  frontend  │◄──────►│   (Prisma)   │◄──────►│ (Netlify scheduled+background│
+│  + API     │        │ source of    │        │  functions, or a VPS worker) │
 └────────────┘        │ truth for    │        │  MigrationScanner (WebSocket │
                       │ settings,    │        │   onLogs + polling fallback) │
    optional           │ engine state,│        │  Collectors → Scoring        │
@@ -57,10 +57,45 @@ profit by default**.
 ### Deploying to Netlify + Neon (recommended)
 
 Deploy directly from GitHub — no Docker, no shell access, no manual database
-commands. The build validates your environment variables (failing with clear
-instructions if something is missing), applies the database schema
-automatically, and the trading engine runs as Netlify scheduled/background
-functions: see [`docs/DEPLOY-NETLIFY.md`](docs/DEPLOY-NETLIFY.md).
+commands. Full guide with troubleshooting:
+[`docs/DEPLOY-NETLIFY.md`](docs/DEPLOY-NETLIFY.md). The short version:
+
+1. **Fork** this repository on GitHub.
+2. **Create a database:** [neon.tech](https://neon.tech) → new project →
+   copy the connection string (the default pooled one is fine — the build
+   derives the direct endpoint it needs automatically).
+3. **Create the site:** Netlify → *Add new project → Import an existing
+   project* → pick your fork. `netlify.toml` supplies the build command and
+   the engine functions.
+4. **Set environment variables** (Site configuration → Environment
+   variables) before the first deploy:
+   - `DATABASE_URL` — the Neon connection string
+   - `NEXTAUTH_SECRET` — `openssl rand -base64 32`
+   - `WALLET_ENCRYPTION_KEY` — `openssl rand -hex 32`
+   - `SOLANA_RPC_URL` — a dedicated RPC (Helius/Triton/QuickNode); strongly
+     recommended, the public endpoint rate-limits the scanner immediately
+5. **Deploy.** The build validates the variables (a missing one fails the
+   build with instructions), applies the database schema to Neon, and
+   publishes. The trading engine starts automatically as a scheduled
+   function that relaunches a background engine cycle every ~13 minutes.
+6. Open `https://<your-site>.netlify.app/register` and create the
+   administrator account (works exactly once).
+
+### Example workflow (first session)
+
+```
+/register            create the administrator account (first run only)
+Settings → Security  enable 2FA (recommended)
+Settings → Wallets   connect Phantom (watch-only; signs a free ownership proof)
+Settings → Wallets   import a dedicated bot wallet (only needed for live mode)
+Settings             review buy rules & risk limits (defaults are conservative)
+Sidebar → Start      engine begins scanning; PAPER mode is the default
+Scanner              watch tokens arrive with 0-100 scores + full explanations
+Positions            paper trades open/close by your rules; PnL and analytics fill in
+Intelligence         narrative/meme/rug-risk signals vs. outcomes
+Dashboard            after ≥1 week of results you trust: Trading mode → Live
+                     (explicit confirmation dialog + imported bot wallet required)
+```
 
 ### Local development
 
