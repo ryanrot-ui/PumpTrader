@@ -1,5 +1,27 @@
 # Production Audit Report — PumpTrader
 
+> **Addendum — seventh round: zero-config Neon bootstrap + fresh-deploy
+> re-verification (2026-07).**
+>
+> The "Registration failed" seen on the deployed Render service was the
+> service still running the pre-fix commit (`20461e6`) — none of the fixes
+> below were ever deployed. Re-verified the whole first-boot path from first
+> principles on this branch (fresh Postgres 16, the real
+> `docker-entrypoint.sh`, the Dockerfile's exact runtime layout): empty DB →
+> 12 tables auto-created → healthz `schemaReady:true` → register → duplicate
+> blocked (403) → login → session → protected routes (307 to /login when
+> anonymous) → logout → re-login after server restart; argon2id hash at
+> rest; P2021 and DB-down both return actionable messages; entrypoint exits
+> non-zero after 6 push attempts when the DB is unreachable.
+>
+> New this round: the entrypoints now **auto-derive `DIRECT_URL`** when
+> `DATABASE_URL` is a pooled Neon endpoint (strip `-pooler` from the host),
+> so a brand-new deploy needs only the single connection string Neon hands
+> out. An explicit `DIRECT_URL` still wins; a residual `-pooler` direct URL
+> still warns. Verified via the real entrypoint against a simulated
+> `-pooler` hostname. `render.yaml`, `.env.example`, and the Render guide
+> updated accordingly.
+
 > **Addendum — sixth round: deployment root-cause fix + full production
 > simulation (2026-07).**
 >

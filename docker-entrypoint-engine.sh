@@ -12,7 +12,18 @@ if [ -z "$DATABASE_URL" ]; then
   exit 1
 fi
 
-export DIRECT_URL="${DIRECT_URL:-$DATABASE_URL}"
+# Same DIRECT_URL derivation as the web entrypoint: a pooled Neon url cannot
+# run the DDL push, so strip "-pooler" from the host when DIRECT_URL is unset.
+if [ -z "$DIRECT_URL" ]; then
+  case "$DATABASE_URL" in
+    *-pooler.*)
+      DIRECT_URL=$(printf '%s' "$DATABASE_URL" | sed 's/-pooler\./\./')
+      echo "[engine] DATABASE_URL is a pooled Neon endpoint — derived DIRECT_URL (host without -pooler) for the schema push. Set DIRECT_URL explicitly to override."
+      ;;
+    *) DIRECT_URL="$DATABASE_URL" ;;
+  esac
+fi
+export DIRECT_URL
 
 echo "[engine] applying database schema…"
 attempt=1

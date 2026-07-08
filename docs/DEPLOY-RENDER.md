@@ -8,23 +8,20 @@ idempotent and non-destructive), so **there is no manual database setup**.
 ## 1. Create the database (Neon)
 
 1. Create a project at <https://neon.tech> (free tier works).
-2. From the Neon dashboard copy **two** connection strings for the same
-   database:
-   - **Pooled** (host contains `-pooler`) → use as `DATABASE_URL`. This is the
-     app's runtime connection.
-   - **Direct / non-pooled** (same string without `-pooler`) → use as
-     `DIRECT_URL`. This is used **only** to apply the schema at boot.
+2. Copy the connection string from the Neon dashboard and use it as
+   `DATABASE_URL` (the default **pooled** string, host contains `-pooler`,
+   is fine — and is what you want at runtime).
 
-   > **Why both are required on Neon.** `prisma db push` (which creates the
-   > tables automatically) needs a *direct* connection — it takes a Postgres
-   > advisory lock and runs DDL that Neon's PgBouncer pooler cannot handle.
-   > If `DIRECT_URL` is missing (or also points at the pooler), the schema
-   > push fails, the database is left with **no tables**, and registration
-   > errors with `table public.User does not exist`. With `DIRECT_URL` set to
-   > the non-pooled endpoint, the container applies the full schema on first
-   > boot and refuses to start if it can't — so you never serve an
-   > un-initialized app. Plain (non-Neon) Postgres needs only `DATABASE_URL`;
-   > `DIRECT_URL` falls back to it automatically.
+   > **How schema setup works on Neon.** `prisma db push` (which creates the
+   > tables automatically at boot) needs a *direct* connection — it takes a
+   > Postgres advisory lock and runs DDL that Neon's PgBouncer pooler cannot
+   > handle. The entrypoint handles this for you: when `DATABASE_URL` is a
+   > pooled Neon endpoint and `DIRECT_URL` is not set, it derives the direct
+   > endpoint automatically (same host without `-pooler`) and pushes the
+   > schema over that. Set `DIRECT_URL` explicitly only if your direct
+   > endpoint differs from that convention. The container refuses to start
+   > if the schema can't be applied — you never serve an un-initialized app.
+   > Plain (non-Neon) Postgres needs only `DATABASE_URL`.
 
 ## 2. Deploy the Blueprint
 
@@ -35,8 +32,8 @@ idempotent and non-destructive), so **there is no manual database setup**.
 
    | Variable | Service(s) | Value |
    |---|---|---|
-   | `DATABASE_URL` | both | the Neon **pooled** connection string (host has `-pooler`) |
-   | `DIRECT_URL` | both | the Neon **non-pooled** string (same, without `-pooler`) — required so the schema applies |
+   | `DATABASE_URL` | both | the Neon connection string (the default pooled one is fine) |
+   | `DIRECT_URL` | both, optional | only if your **non-pooled** endpoint is not simply the pooled host without `-pooler` (auto-derived otherwise) |
    | `NEXTAUTH_SECRET` | web | generated automatically by Render |
    | `WALLET_ENCRYPTION_KEY` | both (**must match**) | `openssl rand -hex 32` |
    | `SOLANA_RPC_URL` | both | a dedicated RPC (Helius/Triton/QuickNode). The public endpoint rate-limits the scanner within seconds. |
