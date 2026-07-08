@@ -8,10 +8,23 @@ idempotent and non-destructive), so **there is no manual database setup**.
 ## 1. Create the database (Neon)
 
 1. Create a project at <https://neon.tech> (free tier works).
-2. Copy the **pooled** connection string
-   (`postgresql://…-pooler.…neon.tech/neondb?sslmode=require`).
-   Prisma works with Neon's PgBouncer pooler out of the box for this app's
-   query patterns; the direct (non-pooled) URL also works.
+2. From the Neon dashboard copy **two** connection strings for the same
+   database:
+   - **Pooled** (host contains `-pooler`) → use as `DATABASE_URL`. This is the
+     app's runtime connection.
+   - **Direct / non-pooled** (same string without `-pooler`) → use as
+     `DIRECT_URL`. This is used **only** to apply the schema at boot.
+
+   > **Why both are required on Neon.** `prisma db push` (which creates the
+   > tables automatically) needs a *direct* connection — it takes a Postgres
+   > advisory lock and runs DDL that Neon's PgBouncer pooler cannot handle.
+   > If `DIRECT_URL` is missing (or also points at the pooler), the schema
+   > push fails, the database is left with **no tables**, and registration
+   > errors with `table public.User does not exist`. With `DIRECT_URL` set to
+   > the non-pooled endpoint, the container applies the full schema on first
+   > boot and refuses to start if it can't — so you never serve an
+   > un-initialized app. Plain (non-Neon) Postgres needs only `DATABASE_URL`;
+   > `DIRECT_URL` falls back to it automatically.
 
 ## 2. Deploy the Blueprint
 
@@ -22,7 +35,8 @@ idempotent and non-destructive), so **there is no manual database setup**.
 
    | Variable | Service(s) | Value |
    |---|---|---|
-   | `DATABASE_URL` | both | the Neon connection string |
+   | `DATABASE_URL` | both | the Neon **pooled** connection string (host has `-pooler`) |
+   | `DIRECT_URL` | both | the Neon **non-pooled** string (same, without `-pooler`) — required so the schema applies |
    | `NEXTAUTH_SECRET` | web | generated automatically by Render |
    | `WALLET_ENCRYPTION_KEY` | both (**must match**) | `openssl rand -hex 32` |
    | `SOLANA_RPC_URL` | both | a dedicated RPC (Helius/Triton/QuickNode). The public endpoint rate-limits the scanner within seconds. |

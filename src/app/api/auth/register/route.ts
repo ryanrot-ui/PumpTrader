@@ -46,14 +46,17 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ ok: true });
   } catch (e) {
-    // Surface infrastructure problems honestly instead of a generic failure —
-    // an unreachable or uninitialized database is a deployment issue, not a
-    // bad password. Details go to the server log only.
-    console.error("[register] failed:", (e as Error).message);
+    // Surface infrastructure problems honestly instead of a generic failure.
+    // P2021 = table does not exist → the schema was never applied (the classic
+    // Neon-pooler first-boot failure); anything else → DB unreachable.
+    const code = (e as { code?: string }).code;
+    console.error("[register] failed:", code ?? "", (e as Error).message);
+    const schemaMissing = code === "P2021";
     return NextResponse.json(
       {
-        error:
-          "The server cannot reach its database. Check DATABASE_URL and the deployment logs (schema is applied automatically at boot).",
+        error: schemaMissing
+          ? "The database schema is not initialized. The app applies it automatically at boot — check the deploy logs for a schema-push error (on Neon, set DIRECT_URL to the non-pooled endpoint)."
+          : "The server cannot reach its database. Check DATABASE_URL and the deployment logs.",
       },
       { status: 503 }
     );

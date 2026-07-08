@@ -1,8 +1,8 @@
 #!/bin/sh
 # Engine container entrypoint. The engine cannot function without its database,
-# so here the schema sync IS required — if it fails we exit non-zero and let
-# the supervisor (Render/compose restart policy) retry, which also covers the
-# case where the database comes up a few seconds after the engine.
+# so the schema sync is required here too. Uses a DIRECT connection for push
+# (Neon's pooled endpoint cannot run the DDL); retries for cold-start; exits
+# non-zero on persistent failure so the platform restarts it.
 
 set -e
 
@@ -12,8 +12,21 @@ if [ -z "$DATABASE_URL" ]; then
   exit 1
 fi
 
-echo "[engine] syncing database schema…"
-npx prisma db push --skip-generate
+export DIRECT_URL="${DIRECT_URL:-$DATABASE_URL}"
+
+echo "[engine] applying database schema…"
+attempt=1
+max=6
+until npx prisma db push --skip-generate; do
+  if [ "$attempt" -ge "$max" ]; then
+    echo "[engine] FATAL: could not apply the database schema after $max attempts — exiting for supervisor restart."
+    exit 1
+  fi
+  wait=$((attempt * 5))
+  echo "[engine] schema push failed (attempt $attempt/$max) — retrying in ${wait}s…"
+  sleep "$wait"
+  attempt=$((attempt + 1))
+done
 
 echo "[engine] starting trading engine worker"
 exec npx tsx src/engine/index.ts

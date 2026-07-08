@@ -19,8 +19,10 @@ services:
     plan: starter
     healthCheckPath: /api/healthz
     envVars:
-      - key: DATABASE_URL # Neon pooled connection string (postgresql://…)
+      - key: DATABASE_URL # Neon POOLED connection string (host contains -pooler)
         sync: false
+      - key: DIRECT_URL # Neon NON-POOLED string (same, without -pooler) — used
+        sync: false #      only to apply the schema; required on Neon
       - key: NEXTAUTH_SECRET
         generateValue: true
       # NEXTAUTH_URL is derived from RENDER_EXTERNAL_URL automatically; set it
@@ -36,7 +38,9 @@ services:
     dockerfilePath: ./Dockerfile.engine
     plan: starter
     envVars:
-      - key: DATABASE_URL # same Neon connection string as the web service
+      - key: DATABASE_URL # same Neon pooled connection string as the web service
+        sync: false
+      - key: DIRECT_URL # same non-pooled string as the web service
         sync: false
       - key: WALLET_ENCRYPTION_KEY # must match the web service exactly
         sync: false

@@ -1,5 +1,58 @@
 # Production Audit Report — PumpTrader
 
+> **Addendum — sixth round: deployment root-cause fix + full production
+> simulation (2026-07).**
+>
+> **Root cause of "table public.User does not exist" on first boot (fixed).**
+> Two compounding causes: (1) `prisma db push` needs a *direct* database
+> connection, but Neon's default string is the *pooled* (PgBouncer) endpoint,
+> which cannot take the advisory lock / run the DDL push requires — so the
+> schema was never created; (2) the entrypoint treated the push as
+> best-effort and started the server anyway, serving registration against
+> missing tables. Fixes:
+> - `prisma/schema.prisma` now declares `directUrl = env("DIRECT_URL")`; the
+>   entrypoints default `DIRECT_URL` to `DATABASE_URL` and push over the
+>   direct endpoint.
+> - `docker-entrypoint.sh` / `docker-entrypoint-engine.sh` now **retry** the
+>   push (Neon cold-start) and **exit non-zero if it ultimately fails** when
+>   DATABASE_URL is set — the app never serves with an un-initialized schema.
+>   They also warn if `DIRECT_URL` points at a `-pooler` host and validate
+>   `NEXTAUTH_URL`/`NEXTAUTH_SECRET`.
+> - `/api/healthz` now reports `schemaReady` (via `to_regclass('public."User"')`).
+> - Registration distinguishes Prisma `P2021` (schema not initialized) from a
+>   generic DB-unreachable error, with an actionable message.
+> - `render.yaml`, `.env.example`, and the Render guide document
+>   `DATABASE_URL` (pooled) + `DIRECT_URL` (non-pooled).
+>
+> **Verified from a genuinely empty database** by running the real
+> `docker-entrypoint.sh` (with the Dockerfile's exact Prisma file layout)
+> against a fresh Postgres: 12 tables created automatically → register →
+> login → session → protected routes → Phantom connect → logout → re-login →
+> persistence, all green; fail-closed proven (push against an unreachable DB
+> retries then refuses to start); `schemaReady:false` + the P2021 message
+> proven on a schema-less DB; zero Redis errors with `REDIS_URL` unset.
+>
+> **Full paper-trading production simulation (38/38 checks).** The real engine
+> was driven against a scripted mock market (exact DexScreener/Helius wire
+> formats + a Solana JSON-RPC mock): buy→position tracking, take-profit,
+> stop-loss, trailing-stop, duplicate-order guard, scanning-resumes-after-
+> close, and fault injection (DexScreener 500, RPC outage+recovery),
+> notifications, persistence across restart. Money-math invariants asserted:
+> fill size `0.1·SOL/price·0.985`, `pnlSol == proceeds − entrySol` on every
+> close (no rounding drift / double counting), `openKey` set-on-open /
+> cleared-on-close (no duplicate orders, no phantom positions), and **zero
+> real transactions in paper mode** (all trades `paper`, no signatures).
+>
+> **Two engine bugs found and fixed by the simulation:**
+> - *Crash-recovery dropped unevaluated tokens.* The watchlist-rebuild query
+>   used `verdict notIn [BOUGHT, IGNORED]`; SQL `NOT IN` excludes NULLs, so a
+>   token detected-but-not-yet-scored before a restart (verdict null) was
+>   silently lost. Fixed to `OR: [{ verdict: null }, { notIn }]`.
+> - *Partial take-profit PnL was not accumulated.* On a partial sell the
+>   realized PnL was written but a later full close overwrote it, under-
+>   counting realized profit. Now accumulated across sells
+>   (`totalPnlSol = (p.pnlSol ?? 0) + pnlSol`).
+
 > **Addendum — fifth round: final security, compliance & operational-safety
 > review (2026-07).** Full adversarial pass over the codebase, dependency
 > audit (`npm audit --omit=dev`: 0 vulnerabilities), and sink sweep (no

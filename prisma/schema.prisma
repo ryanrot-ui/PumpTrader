@@ -4,7 +4,14 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  // App runtime uses DATABASE_URL (Neon's pooled endpoint is fine for queries).
   url      = env("DATABASE_URL")
+  // Schema application (`prisma db push`) needs a DIRECT connection: Neon's
+  // pooled endpoint (PgBouncer) cannot take the advisory lock / run the DDL
+  // that push requires, which silently leaves the database with no tables.
+  // DIRECT_URL should be the non-pooled Neon URL (host without `-pooler`).
+  // Falls back to DATABASE_URL when unset (e.g. plain Postgres in Docker).
+  directUrl = env("DIRECT_URL")
 }
 
 // ── Users & auth ────────────────────────────────────────────────────────────

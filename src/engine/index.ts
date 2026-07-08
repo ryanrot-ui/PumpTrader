@@ -123,7 +123,10 @@ class TradingEngine {
     const recent = await prisma.detectedToken.findMany({
       where: {
         detectedAt: { gte: new Date(Date.now() - WATCH_WINDOW_MS) },
-        verdict: { notIn: ["BOUGHT", "IGNORED"] },
+        // Resume anything not already resolved. NOTE: SQL `NOT IN` excludes
+        // NULLs, so a token detected-but-not-yet-evaluated before a crash
+        // (verdict null) must be matched explicitly or it would be lost.
+        OR: [{ verdict: null }, { verdict: { notIn: ["BOUGHT", "IGNORED"] } }],
       },
     });
     for (const t of recent) {
@@ -739,7 +742,10 @@ class TradingEngine {
 
       const soldAll = portionPct >= 99.999;
       const proportionalEntry = p.entrySol * (portionPct / 100);
+      // Realized PnL for THIS sell; accumulated onto the position so partial
+      // take-profits are never lost from position-based analytics.
       const pnlSol = receivedSol - proportionalEntry;
+      const totalPnlSol = (p.pnlSol ?? 0) + pnlSol;
       const pnlPct = p.entryPriceUsd ? ((priceUsd - p.entryPriceUsd) / p.entryPriceUsd) * 100 : null;
 
       const token = await prisma.detectedToken.findUnique({ where: { mint: p.mint } });
@@ -772,12 +778,16 @@ class TradingEngine {
                 openKey: null,
                 exitSol: receivedSol,
                 exitPriceUsd: priceUsd,
-                pnlSol,
+                pnlSol: totalPnlSol,
                 pnlPct,
                 exitReason: reason,
                 closedAt: new Date(),
               }
-            : { tokenQty: p.tokenQty - sellQty, entrySol: p.entrySol - proportionalEntry },
+            : {
+                tokenQty: p.tokenQty - sellQty,
+                entrySol: p.entrySol - proportionalEntry,
+                pnlSol: totalPnlSol, // realized so far from partial sells
+              },
         }),
       ]);
       await this.bumpDaily({
