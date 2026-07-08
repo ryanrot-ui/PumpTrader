@@ -10,6 +10,7 @@ import { WalletProviders } from "../wallet/WalletProviders";
 const NAV = [
   { href: "/", label: "Dashboard", icon: "◧" },
   { href: "/scanner", label: "Scanner", icon: "◉" },
+  { href: "/intelligence", label: "Intelligence", icon: "◈" },
   { href: "/positions", label: "Positions", icon: "⇅" },
   { href: "/logs", label: "Logs", icon: "≡" },
   { href: "/settings", label: "Settings", icon: "⚙" },

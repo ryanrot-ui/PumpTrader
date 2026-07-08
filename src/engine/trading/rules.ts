@@ -6,16 +6,40 @@ export interface BuyDecision {
   reasons: string[]; // why it passed, or every rule it failed
 }
 
+/** Narrative-intelligence scores relevant to the buy decision. */
+export interface NarrativeGateInput {
+  narrativeScore: number;
+  memeScore: number;
+  rugRiskScore: number;
+}
+
 /**
  * Hard buying rules, evaluated after scoring. All must pass.
  * Every failure is recorded so rejected tokens show exactly why.
+ * Narrative gates apply only when the corresponding threshold is configured
+ * — but a configured gate with MISSING narrative data fails closed.
  */
 export function evaluateBuyRules(
   m: TokenMetrics,
   score: ScoreResult,
-  s: BotSettings
+  s: BotSettings,
+  narrative?: NarrativeGateInput | null
 ): BuyDecision {
   const failures: string[] = [];
+
+  const narrativeGatesConfigured =
+    s.minNarrativeScore !== null || s.minMemeScore !== null || s.maxRugRiskScore !== null;
+  if (narrativeGatesConfigured && !narrative) {
+    failures.push("narrative gates configured but narrative evaluation unavailable");
+  }
+  if (narrative) {
+    if (s.minNarrativeScore !== null && narrative.narrativeScore < s.minNarrativeScore)
+      failures.push(`narrative score ${narrative.narrativeScore} below minimum ${s.minNarrativeScore}`);
+    if (s.minMemeScore !== null && narrative.memeScore < s.minMemeScore)
+      failures.push(`meme strength ${narrative.memeScore} below minimum ${s.minMemeScore}`);
+    if (s.maxRugRiskScore !== null && narrative.rugRiskScore > s.maxRugRiskScore)
+      failures.push(`rug risk ${narrative.rugRiskScore} above maximum ${s.maxRugRiskScore}`);
+  }
 
   if (score.criticalFlags.length > 0)
     failures.push(`critical red flag: ${score.criticalFlags.map((f) => f.label).join(", ")}`);
@@ -64,6 +88,11 @@ export function evaluateBuyRules(
     buy: true,
     reasons: [
       `score ${score.total}/${s.confidenceThreshold} threshold`,
+      ...(narrative
+        ? [
+            `narrative ${narrative.narrativeScore}, meme ${narrative.memeScore}, rug risk ${narrative.rugRiskScore}`,
+          ]
+        : []),
       ...score.greenFlags.slice(0, 6).map((f) => f.label.toLowerCase()),
     ],
   };

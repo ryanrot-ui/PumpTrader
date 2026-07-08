@@ -40,6 +40,7 @@ export async function PUT(req: Request) {
     ...parsed.data,
     // Json columns need the sentinel to store SQL NULL (clears the override)
     scoringWeights: parsed.data.scoringWeights ?? Prisma.DbNull,
+    narrativeWeights: parsed.data.narrativeWeights ?? Prisma.DbNull,
   };
   await prisma.settings.upsert({
     where: { userId: user.id },

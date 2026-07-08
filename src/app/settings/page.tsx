@@ -63,7 +63,21 @@ const SECTIONS: Array<{
       { key: "scannerIntervalSec", label: "Scanner interval (seconds)", hint: "watchlist re-evaluation cadence" },
     ],
   },
+  {
+    title: "Narrative intelligence",
+    fields: [
+      { key: "minNarrativeScore", label: "Min narrative score (0–100)", nullable: true, hint: "social momentum gate; empty = disabled" },
+      { key: "minMemeScore", label: "Min meme strength (0–100)", nullable: true, hint: "meme quality gate; empty = disabled" },
+      { key: "maxRugRiskScore", label: "Max rug risk (0–100)", nullable: true, hint: "evidence-based estimate, not a guarantee; empty = disabled" },
+    ],
+  },
 ];
+
+const NARRATIVE_EXIT_MODES = [
+  { value: "off", label: "Off", hint: "ignore narrative changes after entry" },
+  { value: "alert", label: "Alert", hint: "log + notify when narrative deteriorates" },
+  { value: "execute", label: "Execute", hint: "market-exit when narrative deteriorates" },
+] as const;
 
 export default function SettingsPage() {
   const [form, setForm] = useState<SettingsForm | null>(null);
@@ -141,6 +155,34 @@ export default function SettingsPage() {
                 </div>
               </div>
             ))}
+          </div>
+
+          {/* Narrative exit mode */}
+          <div className="card mt-4 max-w-xl">
+            <div className="stat-label mb-1">Narrative exit strategy</div>
+            <p className="text-[11px] text-slate-600 mb-2">
+              What to do when an OPEN position&apos;s narrative deteriorates (mention velocity
+              collapses, sentiment flips, rug risk spikes).
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              {NARRATIVE_EXIT_MODES.map((m) => (
+                <button
+                  key={m.value}
+                  onClick={() => setForm({ ...form, narrativeExitMode: m.value })}
+                  title={m.hint}
+                  className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                    form.narrativeExitMode === m.value
+                      ? "bg-accent/20 border-accent/50 text-accent"
+                      : "bg-surface-overlay border-surface-border text-slate-500 hover:text-slate-300"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-slate-600 mt-2">
+              {NARRATIVE_EXIT_MODES.find((m) => m.value === form.narrativeExitMode)?.hint}
+            </p>
           </div>
 
           <div className="flex items-center gap-3 mt-4">

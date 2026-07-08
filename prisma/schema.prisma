@@ -83,6 +83,18 @@ model Settings {
   // matching ScoringWeights; null = built-in defaults)
   scoringWeights Json?
 
+  // Narrative intelligence gates (null = gate disabled). Buys additionally
+  // require these when set; scores are 0–100.
+  minNarrativeScore Int?
+  minMemeScore      Int?
+  maxRugRiskScore   Int?
+  // off | alert | execute — what to do when an open position's narrative
+  // deteriorates (alert logs+notifies; execute market-exits).
+  narrativeExitMode String @default("off")
+  // Optional override of narrative component weights (JSON matching
+  // NarrativeWeights; null = built-in defaults)
+  narrativeWeights Json?
+
   // Engine
   botEnabled   Boolean @default(false)
   paperTrading Boolean @default(true)
@@ -106,8 +118,14 @@ model DetectedToken {
   verdict    String? // BUY_CANDIDATE | REJECTED | BOUGHT | IGNORED
   rejectionReasons String[] @default([])
 
+  // Latest narrative-intelligence evaluation (full history in narrative[])
+  narrativeScore Int?
+  memeScore      Int?
+  rugRiskScore   Int?
+
   snapshots TokenSnapshot[]
   scores    ScoreRecord[]
+  narrative NarrativeSnapshot[]
   trades    Trade[]
 
   @@index([detectedAt])
@@ -144,6 +162,37 @@ model ScoreRecord {
   greenFlags String[]
   redFlags   String[]
   critical   Boolean @default(false) // any critical red flag present
+
+  @@index([tokenId, at])
+}
+
+// One narrative-intelligence evaluation of a token: raw social signals plus
+// the derived scores and their explanations. History enables velocity/growth
+// calculations; archived on the same schedule as TokenSnapshot.
+model NarrativeSnapshot {
+  id      String        @id @default(cuid())
+  tokenId String
+  token   DetectedToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  at      DateTime      @default(now())
+
+  // Raw signals (null = source unavailable; scored neutral, never bullish)
+  redditPosts24h   Int?
+  redditEngagement Int? // sum of upvotes+comments across recent posts
+  telegramMembers  Int?
+  xMentions24h     Int?
+  boostsActive     Int? // DexScreener paid promotion count
+  hasTwitter       Boolean @default(false)
+  hasTelegram      Boolean @default(false)
+  hasWebsite       Boolean @default(false)
+
+  // Derived scores (0–100) + explanation payloads
+  memeScore      Int?
+  narrativeScore Int?
+  rugRiskScore   Int?
+  sentiment      Float? // -1..1 from post titles; null = no data
+  // { bullishFactors: string[], bearishFactors: string[],
+  //   meme: string, narrative: string, rug: string, signals: {...} }
+  report Json?
 
   @@index([tokenId, at])
 }
@@ -214,6 +263,9 @@ model Position {
   maxDrawdownPct      Float?
   // Pool liquidity at entry — baseline for the liquidity-drop rug signal.
   entryLiquidityUsd   Float?
+  // Snapshot of every signal present at entry (scores + raw social/on-chain
+  // readings) — compared against the outcome by the learning analytics.
+  entrySignals Json?
 
   // Snapshot of the analysis that triggered the entry
   scannerScore     Int?

@@ -18,6 +18,7 @@
     "admin:reset": "tsx scripts/reset-admin.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
     "@node-rs/argon2": "^2.0.2",
     "@prisma/client": "^5.22.0",
     "@solana/wallet-adapter-base": "^0.9.27",

@@ -19,6 +19,10 @@ import { evaluateBuyRules } from "./trading/rules";
 import { checkRisk } from "./trading/riskManager";
 import { evaluateExit } from "./trading/exitRules";
 import { trackExcursions } from "./trading/excursions";
+import { NarrativeEngine, entrySignalsPayload } from "./narrative";
+import { evaluateNarrativeExit } from "./narrative/exit";
+import { DEFAULT_NARRATIVE_WEIGHTS } from "./narrative/types";
+import type { NarrativeReport } from "./narrative/types";
 import {
   LiveExecutor,
   PaperExecutor,
@@ -75,6 +79,10 @@ class TradingEngine {
   private conn = this.makeConnection();
 
   private config = new LiveConfig();
+  private narrative = new NarrativeEngine(
+    () => this.config.get().narrativeWeights ?? DEFAULT_NARRATIVE_WEIGHTS
+  );
+  private lastNarrativeCheck = new Map<string, number>(); // positionId → ts
   private scanner: MigrationScanner;
   private unsubscribeControl: (() => void) | null = null;
   private readOnly = false;
@@ -314,6 +322,7 @@ class TradingEngine {
       if (age > WATCH_WINDOW_MS) {
         this.watchlist.delete(t.mint);
         forgetToken(t.mint);
+        this.narrative.forget(t.mint);
         await prisma.detectedToken.update({
           where: { id: t.tokenId },
           data: { verdict: "IGNORED", rejectionReasons: ["watch window expired"] },
@@ -361,7 +370,17 @@ class TradingEngine {
 
       if (metrics.ageSinceMigrationSec < MIN_AGE_BEFORE_BUY_S) return; // let it settle
 
-      const decision = evaluateBuyRules(metrics, score, settings);
+      // Narrative & social research (cached; degrades to neutral scores when
+      // sources are unavailable). Runs for every watched token so the
+      // scanner UI always shows the intelligence alongside the tech score.
+      let narrativeReport: NarrativeReport | null = null;
+      try {
+        narrativeReport = await this.narrative.evaluate(t.tokenId, metrics);
+      } catch (e) {
+        logger.warn("scoring", `narrative evaluation failed for ${t.mint.slice(0, 8)}…: ${(e as Error).message}`);
+      }
+
+      const decision = evaluateBuyRules(metrics, score, settings, narrativeReport);
       if (!decision.buy) {
         await prisma.detectedToken.update({
           where: { id: t.tokenId },
@@ -386,7 +405,7 @@ class TradingEngine {
         logger.info("risk", `read-only mode: would have bought ${t.mint.slice(0, 8)}… (score ${score.total})`);
         return;
       }
-      await this.tryBuy(t, metrics.priceUsd, metrics.symbol, score.total, score.explanation, decision.reasons);
+      await this.tryBuy(t, metrics.priceUsd, metrics.symbol, score.total, score.explanation, decision.reasons, narrativeReport);
     } catch (e) {
       logger.exception("scoring", `evaluate ${t.mint.slice(0, 8)}… failed`, e);
     } finally {
@@ -402,7 +421,8 @@ class TradingEngine {
     symbol: string | null,
     score: number,
     scoreExplanation: string,
-    reasons: string[]
+    reasons: string[],
+    narrativeReport: NarrativeReport | null
   ): Promise<void> {
     const settings = this.config.get();
     const entryReason = `score ${score}: ${reasons.join("; ")}`;
@@ -445,6 +465,11 @@ class TradingEngine {
             entryReason,
             scannerScore: score,
             scoreExplanation,
+            // Signal snapshot at entry — compared with the outcome by the
+            // learning analytics (/api/signals).
+            entrySignals: narrativeReport
+              ? JSON.parse(JSON.stringify(entrySignalsPayload(score, narrativeReport)))
+              : { scannerScore: score },
           },
         });
       } catch (e) {
@@ -599,9 +624,56 @@ class TradingEngine {
             return;
           }
           await this.closePosition(p.id, price, decision.portionPct, decision.kind!, decision.reason);
+          return;
         }
+
+        // Narrative deterioration watch (configurable: off | alert | execute)
+        await this.monitorNarrative(p, price);
       })
     );
+  }
+
+  /**
+   * Re-research an open position's narrative on a slow cadence and act on
+   * deterioration per settings.narrativeExitMode: "alert" logs + notifies,
+   * "execute" market-exits. Read-only mode always suppresses execution.
+   */
+  private static readonly NARRATIVE_CHECK_MS = 60_000;
+
+  private async monitorNarrative(
+    p: { id: string; mint: string; entrySignals: unknown },
+    priceUsd: number
+  ): Promise<void> {
+    const settings = this.config.get();
+    if (settings.narrativeExitMode === "off") return;
+    const last = this.lastNarrativeCheck.get(p.id) ?? 0;
+    if (Date.now() - last < TradingEngine.NARRATIVE_CHECK_MS) return;
+    this.lastNarrativeCheck.set(p.id, Date.now());
+
+    try {
+      const token = await prisma.detectedToken.findUnique({ where: { mint: p.mint } });
+      if (!token) return;
+      const metrics = await collectMetrics(this.conn, p.mint, token.migratedAt);
+      const report = await this.narrative.evaluate(token.id, metrics);
+
+      const entry = (p.entrySignals ?? {}) as { narrativeScore?: number };
+      const signal = evaluateNarrativeExit({
+        entryNarrativeScore: entry.narrativeScore ?? null,
+        currentNarrativeScore: report.narrativeScore,
+        currentRugRiskScore: report.rugRiskScore,
+        sentiment: report.sentiment,
+      });
+      if (!signal.exit) return;
+
+      if (settings.narrativeExitMode === "alert" || this.isReadOnly()) {
+        logger.warn("risk", `narrative deteriorating on ${p.mint.slice(0, 8)}…: ${signal.reason} (alert only)`);
+        void notify("rug_warning", "Narrative deteriorating", `${p.mint}\n${signal.reason}`);
+        return;
+      }
+      await this.closePosition(p.id, priceUsd, 100, "narrative_exit", `narrative exit: ${signal.reason}`);
+    } catch (e) {
+      logger.warn("risk", `narrative monitor failed for ${p.mint.slice(0, 8)}…: ${(e as Error).message}`);
+    }
   }
 
   private async closePosition(
@@ -737,6 +809,7 @@ class TradingEngine {
       }
     } finally {
       this.selling.delete(positionId);
+      this.lastNarrativeCheck.delete(positionId);
     }
   }
 
@@ -756,6 +829,7 @@ class TradingEngine {
     try {
       const snapshots = await prisma.tokenSnapshot.deleteMany({ where: { at: { lt: cutoff } } });
       const scores = await prisma.scoreRecord.deleteMany({ where: { at: { lt: cutoff } } });
+      await prisma.narrativeSnapshot.deleteMany({ where: { at: { lt: cutoff } } });
       // Trades keep their history (tokenId → SetNull); positions are never touched.
       const tokens = await prisma.detectedToken.deleteMany({
         where: {

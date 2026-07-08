@@ -1,5 +1,23 @@
 # Production Audit Report — PumpTrader
 
+> **Addendum — fourth round: Narrative & Social Intelligence Engine (2026-07).**
+>
+> New subsystem (`src/engine/narrative/`): every watched token is researched
+> across independent public sources (DexScreener socials/boosts/activity,
+> Reddit search, Telegram public pages, optional X counts, optional Claude
+> meme assessment) and scored 0–100 for **narrative**, **meme strength**, and
+> **rug risk** — each with a persisted factor-by-factor explanation
+> (`NarrativeSnapshot`). Buy rules gain fail-closed gates
+> (`minNarrativeScore`/`minMemeScore`/`maxRugRiskScore`); open positions are
+> re-researched every 60s with a configurable deterioration response
+> (`narrativeExitMode`: off/alert/execute); the signal snapshot at entry is
+> stored on each position and compared with outcomes on the new
+> Intelligence page (`/api/signals`). Design constraints: missing data scores
+> neutral (never bullish), paid boosts cap the narrative score, rug risk is
+> explicitly an estimate, and all thresholds/weights are configurable.
+> 22 new unit tests (aggregation, rug risk, exit rules, gate logic, provider
+> parsers). All AI/X integrations are optional and degrade to heuristics.
+
 > **Addendum — third round: Google OAuth + Phantom verification (2026-07).**
 >
 > - **Phantom wallet ownership verification.** Connecting Phantom now links

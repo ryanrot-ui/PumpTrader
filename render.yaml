@@ -46,3 +46,7 @@ services:
         sync: false
       - key: HELIUS_API_KEY # optional: enables holder-count metrics
         sync: false
+      - key: ANTHROPIC_API_KEY # optional: AI meme-quality assessment
+        sync: false
+      - key: TWITTER_BEARER_TOKEN # optional: X mention counts (paid API tier)
+        sync: false

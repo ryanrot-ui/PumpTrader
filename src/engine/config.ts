@@ -42,6 +42,11 @@ export const DEFAULT_SETTINGS: BotSettings = settingsSchema.parse({
   retryCount: 2,
   scannerIntervalSec: 15,
   scoringWeights: null,
+  minNarrativeScore: null,
+  minMemeScore: null,
+  maxRugRiskScore: null,
+  narrativeExitMode: "off",
+  narrativeWeights: null,
   botEnabled: false,
   paperTrading: true,
 });

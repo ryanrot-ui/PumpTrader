@@ -165,6 +165,42 @@ slippage haircut, using the identical decision pipeline).
 - Full audit report: [`docs/AUDIT.md`](docs/AUDIT.md) — read the "manual
   verification" list before trading real funds.
 
+## Narrative & social intelligence
+
+Meme coins move on attention, not fundamentals — so alongside the technical
+score, every watched token is continuously researched by a **Narrative
+Intelligence Engine** (`src/engine/narrative/`):
+
+- **Sources** — DexScreener social profile + paid-boost status + windowed
+  activity acceleration (always on, no keys); Reddit public search (mention
+  velocity, engagement, title sentiment); Telegram public channel pages
+  (community size and growth between snapshots); optional X mention counts
+  (`TWITTER_BEARER_TOKEN`); optional AI meme-quality assessment via the
+  Claude API (`ANTHROPIC_API_KEY`, one small structured request per token).
+  Every source degrades gracefully: missing data scores **neutral, never
+  bullish**, and the missing sources are listed on the report.
+- **Scores (0–100, all explained factor-by-factor)** — **Narrative** (social
+  presence, attention velocity, mention velocity, engagement, community
+  growth, cross-platform confirmation, sentiment; weights configurable via
+  `narrativeWeights`; paid DexScreener boosts cap the score — bought attention
+  isn't organic), **Meme strength** (AI-judged originality/humor/trend
+  relevance/branding blended with observed spread), and **Rug risk** (an
+  evidence-based *estimate* from mint/freeze authority, LP lock, liquidity
+  level and trend, holder concentration, dev behavior, suspicious wallets,
+  trading anomalies, sell pressure — it can never claim certainty).
+- **Decision engine** — buys require the technical score *and* every
+  configured narrative gate (`minNarrativeScore`, `minMemeScore`,
+  `maxRugRiskScore`); a configured gate with missing narrative data fails
+  closed. Every pass/fail reason is recorded on the token and the trade.
+- **Continuous monitoring** — open positions are re-researched every minute;
+  on deterioration (rug-risk spike, narrative collapse vs entry, strongly
+  negative sentiment) the bot alerts or exits per `narrativeExitMode`
+  (off / alert / execute).
+- **Learning** — the full signal snapshot at entry is stored on every
+  position; the **Intelligence** page compares signals against realized
+  outcomes (win rate and average ROI per signal bucket) so strategies are
+  tuned on this bot's own history rather than assumptions.
+
 ## Trading modes
 
 - **Paper** (default) — real market data, real scoring, simulated fills; no
