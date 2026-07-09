@@ -59,7 +59,13 @@ else
   echo "[entrypoint] applying database schema (idempotent, non-destructive)…"
   attempt=1
   max=6
-  until ./node_modules/.bin/prisma db push --skip-generate; do
+  # Invoke the Prisma CLI via its real module path, NOT node_modules/.bin/prisma.
+  # The .bin entry is a symlink to ../prisma/build/index.js; Docker's COPY
+  # dereferences it into a plain file in the standalone image, so the CLI would
+  # resolve its assets relative to .bin and fail with
+  # "ENOENT … /app/node_modules/.bin/prisma_schema_build_bg.wasm". Calling
+  # build/index.js directly keeps __dirname at prisma/build, where the wasm is.
+  until node node_modules/prisma/build/index.js db push --skip-generate; do
     if [ "$attempt" -ge "$max" ]; then
       echo "[entrypoint] FATAL: could not apply the database schema after $max attempts."
       echo "[entrypoint]   Check DATABASE_URL/DIRECT_URL and that the database is reachable."

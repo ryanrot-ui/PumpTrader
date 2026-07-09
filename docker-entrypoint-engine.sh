@@ -33,7 +33,9 @@ fi
 echo "[engine] applying database schema…"
 attempt=1
 max=6
-until ./node_modules/.bin/prisma db push --skip-generate; do
+# Invoke Prisma via its real module path (see web entrypoint) so the schema
+# engine's wasm resolves correctly regardless of how .bin/prisma was packaged.
+until node node_modules/prisma/build/index.js db push --skip-generate; do
   if [ "$attempt" -ge "$max" ]; then
     echo "[engine] FATAL: could not apply the database schema after $max attempts — exiting for supervisor restart."
     exit 1

@@ -25,12 +25,14 @@ RUN groupadd -r app && useradd -r -g app app
 COPY --from=builder --chown=app:app /app/.next/standalone ./
 COPY --from=builder --chown=app:app /app/.next/static ./.next/static
 COPY --from=builder --chown=app:app /app/prisma ./prisma
-# Full Prisma runtime so `prisma db push` works on boot: CLI (+ its wasm),
-# engines, get-platform, and the generated client engine (.prisma).
+# Full Prisma runtime so `prisma db push` works on boot: the CLI package
+# (prisma/build/index.js + prisma_schema_build_bg.wasm), the engines, and the
+# generated client (.prisma). The entrypoint invokes the CLI via its real path
+# `node node_modules/prisma/build/index.js` — NOT the .bin symlink, which Docker
+# dereferences into a plain file and breaks the CLI's wasm asset resolution.
 COPY --from=builder --chown=app:app /app/node_modules/prisma ./node_modules/prisma
 COPY --from=builder --chown=app:app /app/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder --chown=app:app /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder --chown=app:app /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
 COPY --chown=app:app docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh
 USER app
