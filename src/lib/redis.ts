@@ -45,13 +45,26 @@ function attachQuietLogging(client: Redis, label: string): void {
   });
 }
 
-const globalForRedis = globalThis as unknown as { redis?: Redis | null };
+const globalForRedis = globalThis as unknown as { redis?: Redis | null; redisLogged?: boolean };
 
 /** Shared client, or null when REDIS_URL is not configured. */
 export const redis: Redis | null =
   globalForRedis.redis !== undefined ? globalForRedis.redis : createClient();
 
 if (process.env.NODE_ENV !== "production") globalForRedis.redis = redis;
+
+// One-time status line so "is Redis actually on?" is answerable from the logs.
+// Redis is an optional accelerator — the app is fully functional without it
+// (engine heartbeat, status, settings and the feed all live in PostgreSQL).
+if (!globalForRedis.redisLogged) {
+  globalForRedis.redisLogged = true;
+  if (REDIS_URL) {
+    const scheme = REDIS_URL.startsWith("rediss://") ? "rediss (TLS)" : "redis";
+    console.info(`[redis] enabled via REDIS_URL (${scheme}) — pub/sub fast path active when reachable`);
+  } else {
+    console.info("[redis] not configured — running on PostgreSQL only (this is fully supported)");
+  }
+}
 
 /** Fire-and-forget publish; silently a no-op without Redis. */
 export function publish(channel: string, message: string): void {
