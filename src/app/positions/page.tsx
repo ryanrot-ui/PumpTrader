@@ -26,6 +26,8 @@ interface PositionRow {
   exitPriceUsd: number | null;
   pnlSol: number | null;
   pnlPct: number | null;
+  maxUnrealizedPnlPct: number | null;
+  maxDrawdownPct: number | null;
   entryReason: string;
   exitReason: string | null;
   scannerScore: number | null;
@@ -166,6 +168,20 @@ export default function PositionsPage() {
                             </span>
                           </div>
                         )}
+                        <div>
+                          <span className="text-slate-500">Max unrealized profit:</span>{" "}
+                          <span className="font-mono text-profit">
+                            {p.maxUnrealizedPnlPct != null
+                              ? `${p.maxUnrealizedPnlPct > 0 ? "+" : ""}${p.maxUnrealizedPnlPct.toFixed(1)}%`
+                              : "—"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Max drawdown from peak:</span>{" "}
+                          <span className="font-mono text-loss">
+                            {p.maxDrawdownPct != null ? `−${p.maxDrawdownPct.toFixed(1)}%` : "—"}
+                          </span>
+                        </div>
                         <div className="md:col-span-2">
                           <span className="text-slate-500">Buy reasons:</span>{" "}
                           <span className="text-slate-300">{p.entryReason}</span>

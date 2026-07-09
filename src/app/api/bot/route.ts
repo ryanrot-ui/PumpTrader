@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { redis, KEYS } from "@/lib/redis";
+import { publish, CHANNELS } from "@/lib/redis";
+import { engineAlive, getEngineState, requestEngineControl, updateEngineState } from "@/lib/engineState";
 import { requireUser, unauthorized } from "@/lib/session";
 import { rateLimit } from "@/lib/rateLimit";
 
@@ -9,18 +10,16 @@ export async function GET() {
   const user = await requireUser();
   if (!user) return unauthorized();
 
-  const [status, heartbeat, readOnly, settings] = await Promise.all([
-    redis.get(KEYS.botStatus).catch(() => null),
-    redis.get(KEYS.botHeartbeat).catch(() => null),
-    redis.get("bot:readOnly").catch(() => null),
+  const [state, settings] = await Promise.all([
+    getEngineState(),
     prisma.settings.findUnique({ where: { userId: user.id } }),
   ]);
-  const beatAge = heartbeat ? Date.now() - parseInt(heartbeat, 10) : null;
+  const beatAge = state?.heartbeatAt ? Date.now() - state.heartbeatAt.getTime() : null;
   return NextResponse.json({
-    status: status ?? "stopped",
-    engineAlive: beatAge !== null && beatAge < 20_000,
+    status: state?.status ?? "stopped",
+    engineAlive: engineAlive(state?.heartbeatAt),
     lastHeartbeatMsAgo: beatAge,
-    readOnly: readOnly === "1",
+    readOnly: state?.readOnly ?? false,
     // Trading mode indicator: AUTO = the engine trades with the imported bot
     // wallet; MANUAL = bot disabled, trades only via Phantom approval.
     mode: settings?.botEnabled ? "auto" : "manual",
@@ -28,9 +27,16 @@ export async function GET() {
   });
 }
 
-const actionSchema = z.object({
-  action: z.enum(["start", "stop", "emergency_stop", "resume", "read_only_on", "read_only_off"]),
-});
+const actionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.enum(["start", "stop", "emergency_stop", "resume", "read_only_on", "read_only_off"]) }),
+  z.object({
+    action: z.literal("set_mode"),
+    paperTrading: z.boolean(),
+    // Switching to live trading requires an explicit confirmation flag set by
+    // the UI's confirmation dialog — a plain toggle click can never go live.
+    confirmLive: z.boolean().optional(),
+  }),
+]);
 
 export async function POST(req: Request) {
   const user = await requireUser();
@@ -41,29 +47,62 @@ export async function POST(req: Request) {
 
   const parsed = actionSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Invalid action" }, { status: 400 });
-  const { action } = parsed.data;
+  const body = parsed.data;
+  const { action } = body;
 
-  if (action === "start" || action === "stop") {
+  if (action === "set_mode") {
+    if (!body.paperTrading) {
+      if (body.confirmLive !== true) {
+        return NextResponse.json(
+          { error: "Live trading requires explicit confirmation" },
+          { status: 400 }
+        );
+      }
+      // Live mode is unusable (and dangerous to half-enable) without a bot
+      // wallet the engine can sign with.
+      const botWallet = await prisma.wallet.findFirst({
+        where: { userId: user.id, isWatchOnly: false, encryptedKey: { not: null } },
+      });
+      if (!botWallet) {
+        return NextResponse.json(
+          { error: "Import a dedicated bot wallet (Settings → Wallets) before enabling live trading" },
+          { status: 400 }
+        );
+      }
+    }
+    await prisma.settings.upsert({
+      where: { userId: user.id },
+      update: { paperTrading: body.paperTrading },
+      create: { userId: user.id, paperTrading: body.paperTrading },
+    });
+    publish(CHANNELS.settingsUpdated, "updated");
+  } else if (action === "start" || action === "stop") {
     await prisma.settings.upsert({
       where: { userId: user.id },
       update: { botEnabled: action === "start" },
       create: { userId: user.id, botEnabled: action === "start" },
     });
-    await redis.publish(KEYS.settingsChannel, "updated").catch(() => {});
+    publish(CHANNELS.settingsUpdated, "updated");
   } else if (action === "read_only_on" || action === "read_only_off") {
     // Read-only mode: engine observes and scores but executes nothing.
-    await redis.set("bot:readOnly", action === "read_only_on" ? "1" : "0").catch(() => {});
+    await updateEngineState({ readOnly: action === "read_only_on" });
   } else {
-    // emergency_stop / resume go straight to the engine control channel
-    await redis.publish(KEYS.controlChannel, action).catch(() => {});
+    // emergency_stop / resume: DB control queue (engine consumes within ~5s)
+    // plus the Redis fast path when configured.
+    await requestEngineControl(action);
+    publish(CHANNELS.control, action);
   }
 
+  const description =
+    action === "set_mode"
+      ? `trading mode set to ${body.paperTrading ? "PAPER" : "LIVE (confirmed)"}`
+      : `bot control: ${action}`;
   await prisma.logEntry
     .create({
       data: {
         level: action === "emergency_stop" ? "warn" : "info",
         source: "api",
-        message: `bot control: ${action} (by ${user.email})`,
+        message: `${description} (by ${user.email})`,
       },
     })
     .catch(() => {});

@@ -10,38 +10,36 @@ import {
   YAxis,
 } from "recharts";
 import { AppShell } from "@/components/layout/AppShell";
+import { TradingModeToggle } from "@/components/TradingModeToggle";
 import { usePoll } from "@/components/usePoll";
 import { ScoreBadge, Sol, StatCard, shortMint, timeAgo } from "@/components/ui";
+import { HealthIndicators, type Health } from "@/components/HealthIndicators";
 
 interface Stats {
+  totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  successRate: number | null;
   realizedSol: number;
+  dailyRealizedSol: number;
   weeklyRealizedSol: number;
+  monthlyRealizedSol: number;
   openPositions: number;
   exposureSol: number;
   closedPositions: number;
   winRate: number | null;
   roiPct: number | null;
+  avgRoiPct: number | null;
   avgHoldMinutes: number | null;
   avgPnlSol: number | null;
   largestWinSol: number | null;
   largestLossSol: number | null;
-  pnlSeries: Array<{ date: string; realizedSol: number; cumulativeSol: number }>;
+  equityCurve: Array<{ date: string; realizedSol: number; cumulativeSol: number }>;
   today: { realizedSol: number; trades: number; scanned: number; bought: number; rejected: number } | null;
 }
 
-interface Health {
-  engineAlive: boolean;
-  status: string;
-  readOnly: boolean;
-  rpcUrl: string | null;
-  rpcLatencyMs: number | null;
-  scannerLastEventAt: number | null;
-  scansPerMin: number | null;
-  watchlistSize: number | null;
-  lastTradeAt: number | null;
-  memoryRssMb: number | null;
-  lastError: { at: number; source: string; message: string } | null;
-}
+type StatsMode = "all" | "paper" | "live";
+
 
 interface PositionRow {
   id: string;
@@ -75,7 +73,8 @@ interface FeedEvent {
 }
 
 export default function Dashboard() {
-  const { data: stats } = usePoll<Stats>("/api/stats", 10_000);
+  const [mode, setMode] = useState<StatsMode>("all");
+  const { data: stats } = usePoll<Stats>(`/api/stats?mode=${mode}`, 10_000);
   const { data: health } = usePoll<Health>("/api/health", 10_000);
   const { data: positions } = usePoll<PositionRow[]>("/api/positions?status=OPEN", 5_000);
   const { data: tokens } = usePoll<TokenRow[]>("/api/tokens?limit=8", 8_000);
@@ -83,50 +82,27 @@ export default function Dashboard() {
 
   return (
     <AppShell>
-      <h1 className="text-xl font-semibold mb-4">Dashboard</h1>
-
-      {/* Health strip */}
-      <div className="card mb-4 py-2.5 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
-        <span className="flex items-center gap-1.5">
-          <span className={`w-2 h-2 rounded-full ${health?.engineAlive ? "bg-profit" : "bg-loss"}`} />
-          <span className="text-slate-400">
-            {health?.engineAlive ? "Engine healthy" : "Engine offline"}
-            {health?.readOnly ? " · READ-ONLY" : ""}
-          </span>
-        </span>
-        <span className="text-slate-500">
-          RPC{" "}
-          <span className={health?.rpcLatencyMs != null && health.rpcLatencyMs < 500 ? "text-profit" : "text-warn"}>
-            {health?.rpcLatencyMs != null ? `${health.rpcLatencyMs}ms` : "—"}
-          </span>
-        </span>
-        <span className="text-slate-500">
-          Scans/min <span className="text-slate-300">{health?.scansPerMin ?? "—"}</span>
-        </span>
-        <span className="text-slate-500">
-          Watching <span className="text-slate-300">{health?.watchlistSize ?? "—"}</span>
-        </span>
-        <span className="text-slate-500">
-          Last scan{" "}
-          <span className="text-slate-300">
-            {health?.scannerLastEventAt ? `${timeAgo(new Date(health.scannerLastEventAt))} ago` : "—"}
-          </span>
-        </span>
-        <span className="text-slate-500">
-          Last trade{" "}
-          <span className="text-slate-300">
-            {health?.lastTradeAt ? `${timeAgo(new Date(health.lastTradeAt))} ago` : "—"}
-          </span>
-        </span>
-        <span className="text-slate-500">
-          Mem <span className="text-slate-300">{health?.memoryRssMb ? `${health.memoryRssMb}MB` : "—"}</span>
-        </span>
-        {health?.lastError && (
-          <span className="text-loss truncate max-w-md" title={health.lastError.message}>
-            ⚠ [{health.lastError.source}] {health.lastError.message}
-          </span>
-        )}
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+        <h1 className="text-xl font-semibold">Dashboard</h1>
+        <div className="flex gap-1.5">
+          {(["all", "paper", "live"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`text-xs px-3 py-1 rounded-full border transition-colors ${
+                mode === m
+                  ? "bg-accent/20 border-accent/50 text-accent"
+                  : "bg-surface-overlay border-surface-border text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              {m === "all" ? "All trades" : m === "paper" ? "Paper" : "Live"}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Engine / scanner health indicators */}
+      <HealthIndicators health={health} />
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-4">
@@ -139,13 +115,13 @@ export default function Dashboard() {
         <StatCard
           label="ROI"
           value={stats?.roiPct != null ? `${stats.roiPct.toFixed(1)}%` : "—"}
-          sub="on closed positions"
+          sub={`avg ${stats?.avgRoiPct != null ? `${stats.avgRoiPct.toFixed(1)}%` : "—"} per trade`}
           tone={stats?.roiPct != null ? (stats.roiPct > 0 ? "profit" : "loss") : "neutral"}
         />
         <StatCard
           label="Win rate"
           value={stats?.winRate != null ? `${stats.winRate.toFixed(0)}%` : "—"}
-          sub={`${stats?.closedPositions ?? 0} closed`}
+          sub={`${stats?.winningTrades ?? 0}W · ${stats?.losingTrades ?? 0}L of ${stats?.closedPositions ?? 0}`}
         />
         <StatCard
           label="Open positions"
@@ -153,10 +129,10 @@ export default function Dashboard() {
           sub={`${stats?.exposureSol.toFixed(3) ?? "0"} SOL exposure`}
         />
         <StatCard
-          label="Today"
-          value={stats?.today ? `${stats.today.realizedSol >= 0 ? "+" : ""}${stats.today.realizedSol.toFixed(3)}` : "0.000"}
-          sub={`${stats?.today?.trades ?? 0} trades · 7d ${stats ? (stats.weeklyRealizedSol >= 0 ? "+" : "") + stats.weeklyRealizedSol.toFixed(3) : "…"}`}
-          tone={stats?.today && stats.today.realizedSol !== 0 ? (stats.today.realizedSol > 0 ? "profit" : "loss") : "neutral"}
+          label="Profit 24h"
+          value={stats ? `${stats.dailyRealizedSol >= 0 ? "+" : ""}${stats.dailyRealizedSol.toFixed(3)}` : "…"}
+          sub={`7d ${stats ? (stats.weeklyRealizedSol >= 0 ? "+" : "") + stats.weeklyRealizedSol.toFixed(3) : "…"} · 30d ${stats ? (stats.monthlyRealizedSol >= 0 ? "+" : "") + stats.monthlyRealizedSol.toFixed(3) : "…"}`}
+          tone={stats && stats.dailyRealizedSol !== 0 ? (stats.dailyRealizedSol > 0 ? "profit" : "loss") : "neutral"}
         />
         <StatCard
           label="Scanned today"
@@ -170,6 +146,7 @@ export default function Dashboard() {
         <StatCard
           label="Avg hold time"
           value={stats?.avgHoldMinutes != null ? `${stats.avgHoldMinutes.toFixed(0)}m` : "—"}
+          sub={`${stats?.totalTrades ?? 0} trades executed`}
         />
         <StatCard
           label="Avg PnL / trade"
@@ -191,11 +168,13 @@ export default function Dashboard() {
       <div className="grid lg:grid-cols-3 gap-4">
         {/* PnL chart */}
         <div className="card lg:col-span-2">
-          <div className="stat-label mb-3">Cumulative realized PnL (SOL)</div>
+          <div className="stat-label mb-3">
+            Equity curve — cumulative realized PnL (SOL{mode !== "all" ? `, ${mode} trades` : ""})
+          </div>
           <div className="h-56">
-            {stats && stats.pnlSeries.length > 0 ? (
+            {stats && stats.equityCurve.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={stats.pnlSeries} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+                <AreaChart data={stats.equityCurve} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
                   <defs>
                     <linearGradient id="pnl" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor="#6366f1" stopOpacity={0.4} />
@@ -224,10 +203,12 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Scanner feed */}
-        <div className="card">
-          <div className="stat-label mb-3">Latest detections</div>
-          <div className="space-y-2 max-h-56 overflow-y-auto">
+        {/* Mode toggle + scanner feed */}
+        <div className="space-y-4">
+          <TradingModeToggle />
+          <div className="card">
+            <div className="stat-label mb-3">Latest detections</div>
+            <div className="space-y-2 max-h-56 overflow-y-auto">
             {(tokens ?? []).map((t) => (
               <div key={t.mint} className="flex items-center justify-between gap-2 text-sm animate-slide-in">
                 <div className="min-w-0">
@@ -240,9 +221,10 @@ export default function Dashboard() {
                 </div>
               </div>
             ))}
-            {(!tokens || tokens.length === 0) && (
-              <p className="text-sm text-slate-600">Waiting for migrations…</p>
-            )}
+              {(!tokens || tokens.length === 0) && (
+                <p className="text-sm text-slate-600">Waiting for migrations…</p>
+              )}
+            </div>
           </div>
         </div>
       </div>

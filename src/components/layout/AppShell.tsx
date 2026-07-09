@@ -10,6 +10,7 @@ import { WalletProviders } from "../wallet/WalletProviders";
 const NAV = [
   { href: "/", label: "Dashboard", icon: "◧" },
   { href: "/scanner", label: "Scanner", icon: "◉" },
+  { href: "/intelligence", label: "Intelligence", icon: "◈" },
   { href: "/positions", label: "Positions", icon: "⇅" },
   { href: "/logs", label: "Logs", icon: "≡" },
   { href: "/settings", label: "Settings", icon: "⚙" },
@@ -151,6 +152,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               Sign out
             </button>
+            <p className="text-[9px] text-slate-600 leading-snug px-1">
+              High-risk experimental software — not financial advice, no profit
+              guarantees. Paper trades are simulations.
+            </p>
           </div>
         </aside>
 

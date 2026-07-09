@@ -15,6 +15,7 @@ export async function GET(req: Request) {
     include: {
       scores: { orderBy: { at: "desc" }, take: 1 },
       snapshots: { orderBy: { at: "desc" }, take: 1 },
+      narrative: { orderBy: { at: "desc" }, take: 1 },
     },
   });
 
@@ -33,6 +34,10 @@ export async function GET(req: Request) {
       critical: t.scores[0]?.critical ?? false,
       breakdown: t.scores[0]?.breakdown ?? null,
       snapshot: t.snapshots[0] ?? null,
+      narrativeScore: t.narrativeScore,
+      memeScore: t.memeScore,
+      rugRiskScore: t.rugRiskScore,
+      narrative: t.narrative[0]?.report ?? null,
     }))
   );
 }

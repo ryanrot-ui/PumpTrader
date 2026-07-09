@@ -1,9 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
+import { WalletReadyState } from "@solana/wallet-adapter-base";
 import { VersionedTransaction } from "@solana/web3.js";
+import bs58 from "bs58";
 import { AppShell } from "@/components/layout/AppShell";
+import { WALLET_ERROR_EVENT } from "@/components/wallet/WalletProviders";
+import { TradingModeToggle } from "@/components/TradingModeToggle";
 import { usePoll } from "@/components/usePoll";
 import { shortMint, timeAgo } from "@/components/ui";
 
@@ -59,7 +63,21 @@ const SECTIONS: Array<{
       { key: "scannerIntervalSec", label: "Scanner interval (seconds)", hint: "watchlist re-evaluation cadence" },
     ],
   },
+  {
+    title: "Narrative intelligence",
+    fields: [
+      { key: "minNarrativeScore", label: "Min narrative score (0–100)", nullable: true, hint: "social momentum gate; empty = disabled" },
+      { key: "minMemeScore", label: "Min meme strength (0–100)", nullable: true, hint: "meme quality gate; empty = disabled" },
+      { key: "maxRugRiskScore", label: "Max rug risk (0–100)", nullable: true, hint: "evidence-based estimate, not a guarantee; empty = disabled" },
+    ],
+  },
 ];
+
+const NARRATIVE_EXIT_MODES = [
+  { value: "off", label: "Off", hint: "ignore narrative changes after entry" },
+  { value: "alert", label: "Alert", hint: "log + notify when narrative deteriorates" },
+  { value: "execute", label: "Execute", hint: "market-exit when narrative deteriorates" },
+] as const;
 
 export default function SettingsPage() {
   const [form, setForm] = useState<SettingsForm | null>(null);
@@ -108,29 +126,13 @@ export default function SettingsPage() {
         guarantee profitable trades on newly migrated tokens, which are extremely volatile.
       </p>
 
+      {/* Paper / Live switch — server-enforced confirmation before live mode */}
+      <div className="max-w-md mb-4">
+        <TradingModeToggle />
+      </div>
+
       {form && (
         <>
-          {/* Mode toggles */}
-          <div className="card mb-4 flex flex-wrap gap-6 items-center">
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input
-                type="checkbox"
-                checked={Boolean(form.paperTrading)}
-                onChange={(e) => setForm({ ...form, paperTrading: e.target.checked })}
-                className="accent-indigo-500 w-4 h-4"
-              />
-              <span>
-                Paper trading{" "}
-                <span className="text-slate-500 text-xs">(simulated fills, no real SOL — recommended)</span>
-              </span>
-            </label>
-            {!form.paperTrading && (
-              <span className="text-xs text-warn bg-warn/10 border border-warn/30 rounded px-2 py-1">
-                ⚠ LIVE MODE — trades spend real SOL from the imported bot wallet
-              </span>
-            )}
-          </div>
-
           <div className="grid lg:grid-cols-2 xl:grid-cols-4 gap-4">
             {SECTIONS.map((section) => (
               <div key={section.title} className="card">
@@ -153,6 +155,34 @@ export default function SettingsPage() {
                 </div>
               </div>
             ))}
+          </div>
+
+          {/* Narrative exit mode */}
+          <div className="card mt-4 max-w-xl">
+            <div className="stat-label mb-1">Narrative exit strategy</div>
+            <p className="text-[11px] text-slate-600 mb-2">
+              What to do when an OPEN position&apos;s narrative deteriorates (mention velocity
+              collapses, sentiment flips, rug risk spikes).
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              {NARRATIVE_EXIT_MODES.map((m) => (
+                <button
+                  key={m.value}
+                  onClick={() => setForm({ ...form, narrativeExitMode: m.value })}
+                  title={m.hint}
+                  className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                    form.narrativeExitMode === m.value
+                      ? "bg-accent/20 border-accent/50 text-accent"
+                      : "bg-surface-overlay border-surface-border text-slate-500 hover:text-slate-300"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-slate-600 mt-2">
+              {NARRATIVE_EXIT_MODES.find((m) => m.value === form.narrativeExitMode)?.hint}
+            </p>
           </div>
 
           <div className="flex items-center gap-3 mt-4">
@@ -294,38 +324,94 @@ interface WalletRow {
 }
 
 function WalletPanel() {
-  const { publicKey, connected, connect, disconnect, wallet, select, wallets } = useWallet();
+  const { publicKey, connected, connect, disconnect, wallet, select, wallets, signMessage } =
+    useWallet();
   const { data: walletRows, reload } = usePoll<WalletRow[]>("/api/wallet", 30_000);
   const [importKey, setImportKey] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const verifyingRef = useRef<string | null>(null);
 
-  // Wallet-change detection: whenever Phantom switches accounts (or connects),
-  // register the new address server-side as watch-only.
+  // Wallet errors surface here (the adapter otherwise deselects silently):
+  // rejected prompts, locked wallet, network failures.
   useEffect(() => {
-    if (!publicKey) return;
-    void fetch("/api/wallet", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        kind: "watch",
-        payload: { publicKey: publicKey.toBase58(), label: "Phantom (watch-only)" },
-      }),
-    }).then(() => reload());
-  }, [publicKey, reload]);
+    const onWalletError = (e: Event) => {
+      const { name } = (e as CustomEvent<{ name: string; message: string }>).detail;
+      if (name === "WalletConnectionError") {
+        setMsg("Connection cancelled — the Phantom request was rejected");
+      } else if (name === "WalletNotReadyError") {
+        setMsg("Phantom not detected — install the Phantom browser extension");
+      } else if (name !== "WalletDisconnectedError") {
+        setMsg("Wallet error — check that Phantom is unlocked and try again");
+      }
+    };
+    window.addEventListener(WALLET_ERROR_EVENT, onWalletError);
+    return () => window.removeEventListener(WALLET_ERROR_EVENT, onWalletError);
+  }, []);
+
+  // Wallet-change detection: whenever Phantom connects or switches accounts,
+  // link the new address to this account — after the wallet proves ownership
+  // by signing a verification message (free, no transaction).
+  useEffect(() => {
+    if (!publicKey || !signMessage) return;
+    const address = publicKey.toBase58();
+    if (verifyingRef.current === address) return; // already verifying this key
+    if (walletRows?.some((w) => w.publicKey === address)) return; // already linked
+    verifyingRef.current = address;
+
+    void (async () => {
+      try {
+        const { message } = (await fetch("/api/wallet/verify-message").then((r) => r.json())) as {
+          message: string;
+        };
+        // Phantom prompts here; the user can decline (wallet stays connected
+        // but is not linked to the account).
+        const signature = await signMessage(new TextEncoder().encode(message));
+        const res = await fetch("/api/wallet", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "watch",
+            payload: {
+              publicKey: address,
+              label: "Phantom (watch-only)",
+              message,
+              signature: bs58.encode(signature),
+            },
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        setMsg(
+          res.ok
+            ? "Phantom connected and ownership verified (watch-only; mainnet)"
+            : (body.error ?? "Wallet verification failed")
+        );
+        if (res.ok) reload();
+      } catch {
+        setMsg("Wallet verification declined — Phantom is connected but not linked to your account");
+      } finally {
+        verifyingRef.current = null;
+      }
+    })();
+  }, [publicKey, signMessage, walletRows, reload]);
 
   const connectPhantom = async () => {
     try {
       if (!wallet) {
         const phantom = wallets.find((w) => w.adapter.name === "Phantom");
-        if (!phantom) {
+        if (!phantom || phantom.readyState !== WalletReadyState.Installed) {
           setMsg("Phantom not detected — install the Phantom browser extension");
           return;
         }
+        // select() updates context asynchronously; the provider's autoConnect
+        // completes the connection. Calling connect() in the same tick would
+        // throw WalletNotSelectedError.
         select(phantom.adapter.name);
+        setMsg("Connecting to Phantom…");
+        return;
       }
       await connect();
-      setMsg("Phantom connected (watch-only; mainnet)");
+      setMsg("Phantom connected — approve the verification signature to link it");
     } catch {
       setMsg("Connection cancelled");
     }

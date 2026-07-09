@@ -1,0 +1,66 @@
+# Render Blueprint — deploys the full platform in one click:
+#   web    — Next.js dashboard + API   (Docker)
+#   worker — 24/7 trading engine       (Docker)
+#
+# Both services share ONE PostgreSQL database. Redis is OPTIONAL (the app
+# coordinates through the database); add REDIS_URL later to enable the pub/sub
+# fast path.
+#
+# HOW TO DEPLOY
+#   1. Push this repo to GitHub.
+#   2. Render dashboard → New → Blueprint → pick this repo. Render reads this file.
+#   3. When prompted, paste ONE value: DATABASE_URL (your PostgreSQL connection
+#      string — Neon's free tier works well). NEXTAUTH_SECRET is generated for
+#      you. Everything else is optional (see below).
+#   4. Click Apply. The containers apply the Prisma schema automatically on boot,
+#      so a brand-new empty database works with zero manual commands.
+#
+# NEON NOTE: paste Neon's default (pooled) string as DATABASE_URL. The schema is
+# applied over a DIRECT connection that the containers auto-derive by removing
+# "-pooler" from the host — you do NOT need to set DIRECT_URL yourself. Only set
+# DIRECT_URL if your pooled and direct hosts differ by more than "-pooler".
+
+services:
+  # ── Web: dashboard + API + auth ──────────────────────────────────────────
+  - type: web
+    name: pumptrader-web
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /api/healthz
+    envVars:
+      - key: DATABASE_URL # REQUIRED. PostgreSQL connection string (Neon pooled URL is fine).
+        sync: false
+      - key: NEXTAUTH_SECRET # generated automatically; no action needed.
+        generateValue: true
+      # NEXTAUTH_URL is derived from Render's RENDER_EXTERNAL_URL automatically;
+      # set it explicitly only when serving from a custom domain.
+      # DIRECT_URL is auto-derived from DATABASE_URL (strip "-pooler"); set it
+      # only if your direct host differs by more than that.
+      - key: WALLET_ENCRYPTION_KEY # OPTIONAL — needed only to import a live-trading wallet. openssl rand -hex 32
+        sync: false
+      - key: SOLANA_RPC_URL # NEEDED FOR SCANNING (see the worker note below). Defaults to public mainnet, which won't detect tokens reliably.
+        sync: false
+
+  # ── Worker: the trading engine (runs 24/7) ───────────────────────────────
+  - type: worker
+    name: pumptrader-engine
+    runtime: docker
+    dockerfilePath: ./Dockerfile.engine
+    plan: starter
+    envVars:
+      - key: DATABASE_URL # REQUIRED — the SAME connection string as the web service.
+        sync: false
+      - key: WALLET_ENCRYPTION_KEY # must match the web service. Required only for LIVE trading.
+        sync: false
+      - key: SOLANA_RPC_URL # NEEDED FOR SCANNING. The public default rejects the
+        sync: false #          scanner websocket (403) and rate-limits polling, so
+        #                      the token list stays empty. Use Helius/QuickNode/Triton.
+      - key: SOLANA_WS_URL # Recommended with SOLANA_RPC_URL — wss endpoint for realtime detection.
+        sync: false
+      - key: HELIUS_API_KEY # OPTIONAL — enables holder-count metrics.
+        sync: false
+      - key: ANTHROPIC_API_KEY # OPTIONAL — AI meme-quality assessment.
+        sync: false
+      - key: TWITTER_BEARER_TOKEN # OPTIONAL — X mention counts (paid API tier).
+        sync: false

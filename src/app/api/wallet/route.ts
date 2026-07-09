@@ -4,6 +4,7 @@ import bs58 from "bs58";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { encryptSecret } from "@/lib/crypto";
+import { verifyWalletProof } from "@/lib/walletVerify";
 import { importWalletSchema } from "@/lib/validation";
 import { requireUser, unauthorized } from "@/lib/session";
 import { rateLimit } from "@/lib/rateLimit";
@@ -62,12 +63,21 @@ const bodySchema = z.union([
   z.object({ kind: z.literal("import"), payload: importWalletSchema }),
   z.object({
     kind: z.literal("watch"),
-    payload: z.object({ publicKey: z.string().min(32).max(44), label: z.string().max(50).optional() }),
+    payload: z.object({
+      publicKey: z.string().min(32).max(44),
+      label: z.string().max(50).optional(),
+      // Ownership proof: the wallet signs the message from
+      // /api/wallet/verify-message; verified server-side (ed25519).
+      message: z.string().min(1).max(500),
+      signature: z.string().min(1).max(120),
+    }),
   }),
 ]);
 
 /**
- * kind: "watch"  — register a connected Phantom address (view balances only).
+ * kind: "watch"  — link a connected Phantom address (view balances only).
+ *                  Requires a signed ownership proof so arbitrary addresses
+ *                  can never be attached to the account.
  * kind: "import" — import a dedicated bot wallet secret key. The key is
  *                  encrypted with AES-256-GCM before it touches the database
  *                  and is only decrypted in the engine at signing time.
@@ -83,11 +93,18 @@ export async function POST(req: Request) {
   if (!parsed.success) return NextResponse.json({ error: "Invalid input" }, { status: 400 });
 
   if (parsed.data.kind === "watch") {
-    const { publicKey, label } = parsed.data.payload;
+    const { publicKey, label, message, signature } = parsed.data.payload;
     try {
       new PublicKey(publicKey); // validate
     } catch {
       return NextResponse.json({ error: "Invalid public key" }, { status: 400 });
+    }
+    const proof = verifyWalletProof({ publicKey, message, signature }, user.id);
+    if (!proof.ok) {
+      return NextResponse.json(
+        { error: `Wallet verification failed: ${proof.reason}` },
+        { status: 400 }
+      );
     }
     const wallet = await prisma.wallet.upsert({
       where: { publicKey },

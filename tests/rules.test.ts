@@ -121,3 +121,42 @@ describe("evaluateBuyRules", () => {
     expect(decision.reasons.some((r) => r.includes("above maximum"))).toBe(true);
   });
 });
+
+describe("narrative gates", () => {
+  const gated = { ...DEFAULT_SETTINGS, minNarrativeScore: 60, minMemeScore: 50, maxRugRiskScore: 40 };
+
+  it("no gates configured → narrative optional", () => {
+    const m = candidate();
+    const d = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS, null);
+    expect(d.buy).toBe(true);
+  });
+
+  it("gates configured but narrative unavailable → fails closed", () => {
+    const m = candidate();
+    const d = evaluateBuyRules(m, scoreToken(m), gated, null);
+    expect(d.buy).toBe(false);
+    expect(d.reasons.some((r) => r.includes("narrative"))).toBe(true);
+  });
+
+  it("passing narrative satisfies all gates and appears in the reasons", () => {
+    const m = candidate();
+    const d = evaluateBuyRules(m, scoreToken(m), gated, {
+      narrativeScore: 75,
+      memeScore: 65,
+      rugRiskScore: 25,
+    });
+    expect(d.buy).toBe(true);
+    expect(d.reasons.some((r) => r.includes("narrative 75"))).toBe(true);
+  });
+
+  it("each failing gate is reported individually", () => {
+    const m = candidate();
+    const d = evaluateBuyRules(m, scoreToken(m), gated, {
+      narrativeScore: 40,
+      memeScore: 30,
+      rugRiskScore: 70,
+    });
+    expect(d.buy).toBe(false);
+    expect(d.reasons.filter((r) => /narrative|meme|rug/.test(r)).length).toBe(3);
+  });
+});

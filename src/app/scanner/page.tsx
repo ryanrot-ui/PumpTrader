@@ -4,6 +4,7 @@ import { useState } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { usePoll } from "@/components/usePoll";
 import { FlagPills, ScoreBadge, shortMint, timeAgo } from "@/components/ui";
+import { HealthIndicators, type Health } from "@/components/HealthIndicators";
 import { PriceChart, type PricePoint, type TradeMarker } from "@/components/charts/PriceChart";
 
 interface MetricRow {
@@ -41,8 +42,21 @@ interface TokenDetail {
 
 export default function ScannerPage() {
   const { data: tokens } = usePoll<TokenRow[]>("/api/tokens?limit=100", 8000);
+  const { data: health } = usePoll<Health>("/api/health", 10_000);
   const [selected, setSelected] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
+
+  // Explain an empty list with the actual reason rather than a generic message.
+  const emptyReason = (() => {
+    if (!health) return "Loading scanner status…";
+    if (!health.engineAlive)
+      return "The engine worker isn’t running — no tokens can be detected. On Render, start the pumptrader-engine worker with the same DATABASE_URL as the web service.";
+    if (health.scannerError)
+      return `Scanner can’t reach Solana RPC: ${health.scannerError}. Detection is paused until the RPC recovers.`;
+    if (health.usingPublicRpc)
+      return "Scanner is running on the public Solana RPC, which rejects the realtime websocket and rate-limits polling — detection is slow or empty. Set SOLANA_RPC_URL (and SOLANA_WS_URL) to a dedicated provider for reliable scanning.";
+    return "Scanner is active and watching for Pump.fun → Raydium migrations. New coins appear here as they migrate — none in the current window yet.";
+  })();
 
   const filtered = (tokens ?? []).filter((t) => {
     if (filter === "candidates") return t.verdict === "BUY_CANDIDATE" || t.verdict === "BOUGHT";
@@ -67,6 +81,8 @@ export default function ScannerPage() {
           ))}
         </div>
       </div>
+
+      <HealthIndicators health={health} />
 
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
@@ -124,8 +140,8 @@ export default function ScannerPage() {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="py-6 text-center text-slate-600">
-                  Nothing detected yet — the scanner populates this list as tokens migrate.
+                <td colSpan={8} className="py-6 px-4 text-center text-slate-500 text-xs max-w-0">
+                  {tokens && tokens.length > 0 ? "No tokens match this filter." : emptyReason}
                 </td>
               </tr>
             )}

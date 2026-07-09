@@ -2,7 +2,8 @@ import { Connection, Keypair } from "@solana/web3.js";
 import bs58 from "bs58";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { redis, KEYS } from "@/lib/redis";
+import { subscribe, CHANNELS } from "@/lib/redis";
+import { ENGINE_STATE_ID, updateEngineState } from "@/lib/engineState";
 import { decryptSecret } from "@/lib/crypto";
 import { validateEnv, rpcEndpoints } from "@/lib/env";
 import {
@@ -17,6 +18,11 @@ import { MigrationScanner, type MigrationEvent } from "./scanner/migrationScanne
 import { evaluateBuyRules } from "./trading/rules";
 import { checkRisk } from "./trading/riskManager";
 import { evaluateExit } from "./trading/exitRules";
+import { trackExcursions } from "./trading/excursions";
+import { NarrativeEngine, entrySignalsPayload } from "./narrative";
+import { evaluateNarrativeExit } from "./narrative/exit";
+import { DEFAULT_NARRATIVE_WEIGHTS } from "./narrative/types";
+import type { NarrativeReport } from "./narrative/types";
 import {
   LiveExecutor,
   PaperExecutor,
@@ -59,6 +65,19 @@ const MIN_AGE_BEFORE_BUY_S = 90; // let post-migration chaos settle first
 const ARCHIVE_AFTER_DAYS = parseInt(process.env.ARCHIVE_AFTER_DAYS ?? "14", 10);
 const RPC_FAIL_THRESHOLD = 3; // consecutive health-probe failures → failover
 
+// Set by the console.error interceptor (bottom of file) whenever @solana/web3.js
+// reports a websocket failure. Read by publishHealth() to derive wsConnected:
+// on the public RPC the migration-authority subscription is rejected (403) and
+// this keeps updating, so wsConnected stays false and the dashboard shows why
+// realtime detection isn't working.
+let lastWsErrorAt = 0;
+
+/** The public mainnet endpoint: reachable over HTTP but rejects the websocket
+ *  subscriptions the realtime scanner needs, and rate-limits polling. */
+function isPublicRpc(url: string | undefined): boolean {
+  return !!url && /api\.mainnet-beta\.solana\.com/.test(url);
+}
+
 interface WatchedToken {
   tokenId: string;
   mint: string;
@@ -73,8 +92,13 @@ class TradingEngine {
   private conn = this.makeConnection();
 
   private config = new LiveConfig();
+  private narrative = new NarrativeEngine(
+    () => this.config.get().narrativeWeights ?? DEFAULT_NARRATIVE_WEIGHTS
+  );
+  private lastNarrativeCheck = new Map<string, number>(); // positionId → ts
   private scanner: MigrationScanner;
-  private control = redis.duplicate();
+  private unsubscribeControl: (() => void) | null = null;
+  private readOnly = false;
   private watchlist = new Map<string, WatchedToken>();
   private buyLock = new AsyncLock(); // serializes risk-check + reservation
   private selling = new Set<string>();
@@ -112,7 +136,10 @@ class TradingEngine {
     const recent = await prisma.detectedToken.findMany({
       where: {
         detectedAt: { gte: new Date(Date.now() - WATCH_WINDOW_MS) },
-        verdict: { notIn: ["BOUGHT", "IGNORED"] },
+        // Resume anything not already resolved. NOTE: SQL `NOT IN` excludes
+        // NULLs, so a token detected-but-not-yet-evaluated before a crash
+        // (verdict null) must be matched explicitly or it would be lost.
+        OR: [{ verdict: null }, { verdict: { notIn: ["BOUGHT", "IGNORED"] } }],
       },
     });
     for (const t of recent) {
@@ -126,17 +153,20 @@ class TradingEngine {
     logger.info("engine", `recovered ${openPositions} open position(s), ${recent.length} watched token(s)`);
 
     await this.scanner.start();
-    await this.control.subscribe(KEYS.controlChannel);
-    this.control.on("message", (_ch, msg) => this.onControl(msg));
+    // Loud, one-time self-test so an empty token list always has a logged
+    // reason (RPC unreachable? public endpoint? rate-limited?) rather than
+    // failing silently.
+    void this.runScannerDiagnostic();
+    // Control fast path via Redis pub/sub when configured; the state tick
+    // below polls the DB control queue either way, so Redis is optional.
+    this.unsubscribeControl = subscribe(CHANNELS.control, (msg) => void this.onControl(msg));
 
     this.scheduleEvalLoop();
     this.timers.push(setInterval(() => void this.monitorPositions(), MONITOR_INTERVAL_MS));
     this.timers.push(setInterval(() => void this.publishHealth(), HEALTH_INTERVAL_MS));
     this.timers.push(setInterval(() => void this.archiveOldData(), ARCHIVE_INTERVAL_MS));
-    this.timers.push(
-      setInterval(() => void redis.set(KEYS.botHeartbeat, Date.now().toString()).catch(() => {}), 5_000)
-    );
-    await redis.set(KEYS.botStatus, "running");
+    this.timers.push(setInterval(() => void this.stateTick(), 5_000));
+    await this.stateTick();
     logger.info("engine", "engine running — scanning for Pump.fun migrations");
   }
 
@@ -145,9 +175,38 @@ class TradingEngine {
     if (this.evalTimer) clearTimeout(this.evalTimer);
     await this.scanner.stop();
     await this.config.stop();
-    await redis.set(KEYS.botStatus, "stopped").catch(() => {});
-    this.control.disconnect();
+    this.unsubscribeControl?.();
+    await updateEngineState({ status: "stopped" }).catch(() => {});
     logger.info("engine", "engine stopped");
+  }
+
+  /**
+   * Heartbeat + control poll, every 5s. Writes liveness to the shared
+   * EngineState row and consumes any queued control command (the DB queue is
+   * the Redis-free fallback for emergency stop / resume) and the read-only
+   * flag. Failures are swallowed — the next tick retries.
+   */
+  private async stateTick(): Promise<void> {
+    try {
+      const state = await prisma.engineState.upsert({
+        where: { id: ENGINE_STATE_ID },
+        update: {
+          heartbeatAt: new Date(),
+          status: this.emergencyStopped ? "emergency_stopped" : "running",
+        },
+        create: { id: ENGINE_STATE_ID, heartbeatAt: new Date(), status: "running" },
+      });
+      this.readOnly = state.readOnly;
+      if (state.controlRequest) {
+        await prisma.engineState.update({
+          where: { id: ENGINE_STATE_ID },
+          data: { controlRequest: null, controlRequestedAt: null },
+        });
+        await this.onControl(state.controlRequest);
+      }
+    } catch (e) {
+      logger.warn("engine", `state tick failed: ${(e as Error).message}`);
+    }
   }
 
   /** Self-scheduling evaluation loop so scannerIntervalSec hot-reloads. */
@@ -163,15 +222,23 @@ class TradingEngine {
     }, intervalMs);
   }
 
-  private onControl(msg: string): void {
-    if (msg === "emergency_stop") {
+  private async onControl(msg: string): Promise<void> {
+    if (msg === "emergency_stop" && !this.emergencyStopped) {
       this.emergencyStopped = true;
-      void redis.set(KEYS.botStatus, "emergency_stopped");
+      await updateEngineState({
+        status: "emergency_stopped",
+        controlRequest: null,
+        controlRequestedAt: null,
+      }).catch(() => {});
       logger.warn("engine", "EMERGENCY STOP received — no new buys; exiting all positions");
       void this.emergencyExitAll();
-    } else if (msg === "resume") {
+    } else if (msg === "resume" && this.emergencyStopped) {
       this.emergencyStopped = false;
-      void redis.set(KEYS.botStatus, "running");
+      await updateEngineState({
+        status: "running",
+        controlRequest: null,
+        controlRequestedAt: null,
+      }).catch(() => {});
       logger.info("engine", "resumed from emergency stop");
     }
   }
@@ -196,21 +263,36 @@ class TradingEngine {
     const cutoff = Date.now() - 60_000;
     this.scanTimestamps = this.scanTimestamps.filter((t) => t > cutoff);
     const mem = process.memoryUsage();
+    const rpcUrl = this.rpcUrls[this.rpcIndex];
+    const tokensDetected = await prisma.detectedToken.count().catch(() => undefined);
+    // No ws error in the last 90s → treat the realtime subscription as healthy.
+    // On the public RPC the 403 recurs, so this stays false and the dashboard
+    // shows the scanner is running on the polling path only.
+    const wsConnected = lastWsErrorAt === 0 ? this.scanner.hasSubscription : Date.now() - lastWsErrorAt > 90_000;
 
-    await redis
-      .hset("bot:health", {
-        at: Date.now().toString(),
-        rpcUrl: this.rpcUrls[this.rpcIndex],
-        rpcLatencyMs: rpcLatencyMs === null ? "" : rpcLatencyMs.toString(),
-        rpcFailures: this.rpcFailures.toString(),
-        scannerLastEventAt: this.scanner.lastActivityAt.toString(),
-        scansPerMin: this.scanTimestamps.length.toString(),
-        watchlistSize: this.watchlist.size.toString(),
-        lastTradeAt: this.lastTradeAt?.toString() ?? "",
-        rssMb: Math.round(mem.rss / 1024 / 1024).toString(),
-        heapMb: Math.round(mem.heapUsed / 1024 / 1024).toString(),
-      })
-      .catch(() => {});
+    await updateEngineState({
+      health: {
+        rpcUrl,
+        rpcLatencyMs,
+        rpcFailures: this.rpcFailures,
+        scannerLastEventAt: this.scanner.lastActivityAt,
+        scansPerMin: this.scanTimestamps.length,
+        watchlistSize: this.watchlist.size,
+        lastTradeAt: this.lastTradeAt,
+        rssMb: Math.round(mem.rss / 1024 / 1024),
+        heapMb: Math.round(mem.heapUsed / 1024 / 1024),
+        scannerSubscribed: this.scanner.hasSubscription,
+        lastScanAt: this.scanner.lastPollAt,
+        lastPollCount: this.scanner.lastPollCount,
+        wsConnected,
+        usingPublicRpc: isPublicRpc(rpcUrl),
+        tokensDetected,
+        scannerError: this.scanner.lastPollError,
+      },
+    }).catch(() => {});
+
+    // Keep an explanation in the logs while the list is empty.
+    void this.logIfNoDetections();
   }
 
   private async rotateRpc(): Promise<void> {
@@ -224,6 +306,64 @@ class TradingEngine {
   }
 
   // ── scanning & evaluation ─────────────────────────────────────────────────
+
+  /**
+   * One-time boot self-test for the scanner. Confirms the RPC can reach the
+   * Pump.fun migration authority over HTTP (the polling path), and warns loudly
+   * when running on the public endpoint, whose websocket the realtime scanner
+   * cannot use. Every outcome is logged so an empty token list is explainable.
+   */
+  private async runScannerDiagnostic(): Promise<void> {
+    const rpcUrl = this.rpcUrls[this.rpcIndex];
+    const usingPublic = isPublicRpc(rpcUrl);
+    try {
+      const count = await this.scanner.probe();
+      logger.info(
+        "scanner",
+        `scanner online — polling path reachable (RPC ${rpcUrl} returned ${count} recent migration-authority signatures). ` +
+          `New Pump.fun→Raydium migrations will appear here as they happen.`
+      );
+    } catch (e) {
+      logger.error(
+        "scanner",
+        `scanner cannot reach the migration authority over RPC (${rpcUrl}): ${(e as Error).message}. ` +
+          `No tokens will be detected until the RPC is reachable — check SOLANA_RPC_URL / rate limits.`
+      );
+    }
+    if (usingPublic) {
+      logger.warn(
+        "scanner",
+        "Using the PUBLIC Solana RPC (api.mainnet-beta.solana.com). It rejects the realtime " +
+          "websocket subscription the scanner uses (HTTP 403) and rate-limits polling, so token " +
+          "detection will be slow or empty. Set SOLANA_RPC_URL (and SOLANA_WS_URL) to a dedicated " +
+          "provider — e.g. a free Helius key — on BOTH the web and engine services for reliable scanning."
+      );
+    }
+  }
+
+  /** Throttled reminder that explains a persistently empty token list. */
+  private lastEmptyReasonLogAt = 0;
+  private async logIfNoDetections(): Promise<void> {
+    if (this.scanner.totalDetected > 0) return;
+    if (Date.now() - this.lastEmptyReasonLogAt < 10 * 60_000) return;
+    this.lastEmptyReasonLogAt = Date.now();
+    const rpcUrl = this.rpcUrls[this.rpcIndex];
+    const polledOk = this.scanner.lastPollAt != null && this.scanner.lastPollError == null;
+    if (!polledOk) {
+      logger.warn(
+        "scanner",
+        `No tokens detected yet. Scanner poll is failing: ${this.scanner.lastPollError ?? "no poll completed"} ` +
+          `(RPC ${rpcUrl}). ${isPublicRpc(rpcUrl) ? "Set a dedicated SOLANA_RPC_URL." : "Check RPC reachability/limits."}`
+      );
+    } else {
+      logger.info(
+        "scanner",
+        `No migrations detected yet, but the scanner is active (last poll returned ${this.scanner.lastPollCount} ` +
+          `authority signatures). This is normal during quiet periods; a new coin appears here when one migrates.` +
+          (isPublicRpc(rpcUrl) ? " Detection is degraded on the public RPC — set SOLANA_RPC_URL for realtime scanning." : "")
+      );
+    }
+  }
 
   private async onMigration(e: MigrationEvent): Promise<void> {
     if (this.watchlist.has(e.mint)) return;
@@ -250,9 +390,10 @@ class TradingEngine {
     });
   }
 
-  /** Read-only mode: scan and score, but never execute anything. */
-  private async isReadOnly(): Promise<boolean> {
-    return (await redis.get("bot:readOnly").catch(() => null)) === "1";
+  /** Read-only mode: scan and score, but never execute anything.
+   *  The flag lives in EngineState and is refreshed by the 5s state tick. */
+  private isReadOnly(): boolean {
+    return this.readOnly;
   }
 
   private async evaluateWatchlist(): Promise<void> {
@@ -275,6 +416,7 @@ class TradingEngine {
       if (age > WATCH_WINDOW_MS) {
         this.watchlist.delete(t.mint);
         forgetToken(t.mint);
+        this.narrative.forget(t.mint);
         await prisma.detectedToken.update({
           where: { id: t.tokenId },
           data: { verdict: "IGNORED", rejectionReasons: ["watch window expired"] },
@@ -322,7 +464,17 @@ class TradingEngine {
 
       if (metrics.ageSinceMigrationSec < MIN_AGE_BEFORE_BUY_S) return; // let it settle
 
-      const decision = evaluateBuyRules(metrics, score, settings);
+      // Narrative & social research (cached; degrades to neutral scores when
+      // sources are unavailable). Runs for every watched token so the
+      // scanner UI always shows the intelligence alongside the tech score.
+      let narrativeReport: NarrativeReport | null = null;
+      try {
+        narrativeReport = await this.narrative.evaluate(t.tokenId, metrics);
+      } catch (e) {
+        logger.warn("scoring", `narrative evaluation failed for ${t.mint.slice(0, 8)}…: ${(e as Error).message}`);
+      }
+
+      const decision = evaluateBuyRules(metrics, score, settings, narrativeReport);
       if (!decision.buy) {
         await prisma.detectedToken.update({
           where: { id: t.tokenId },
@@ -343,11 +495,11 @@ class TradingEngine {
         where: { id: t.tokenId },
         data: { verdict: "BUY_CANDIDATE" },
       });
-      if (await this.isReadOnly()) {
+      if (this.isReadOnly()) {
         logger.info("risk", `read-only mode: would have bought ${t.mint.slice(0, 8)}… (score ${score.total})`);
         return;
       }
-      await this.tryBuy(t, metrics.priceUsd, metrics.symbol, score.total, score.explanation, decision.reasons);
+      await this.tryBuy(t, metrics.priceUsd, metrics.symbol, score.total, score.explanation, decision.reasons, narrativeReport);
     } catch (e) {
       logger.exception("scoring", `evaluate ${t.mint.slice(0, 8)}… failed`, e);
     } finally {
@@ -363,7 +515,8 @@ class TradingEngine {
     symbol: string | null,
     score: number,
     scoreExplanation: string,
-    reasons: string[]
+    reasons: string[],
+    narrativeReport: NarrativeReport | null
   ): Promise<void> {
     const settings = this.config.get();
     const entryReason = `score ${score}: ${reasons.join("; ")}`;
@@ -406,6 +559,11 @@ class TradingEngine {
             entryReason,
             scannerScore: score,
             scoreExplanation,
+            // Signal snapshot at entry — compared with the outcome by the
+            // learning analytics (/api/signals).
+            entrySignals: narrativeReport
+              ? JSON.parse(JSON.stringify(entrySignalsPayload(score, narrativeReport)))
+              : { scannerScore: score },
           },
         });
       } catch (e) {
@@ -525,19 +683,26 @@ class TradingEngine {
         const price = await getTokenPriceUsd(p.mint);
         if (!price || !p.entryPriceUsd) return; // stale/no price → never act on it
 
-        const peak = Math.max(p.peakPriceUsd ?? price, price);
-        if (peak !== p.peakPriceUsd) {
-          await prisma.position.update({ where: { id: p.id }, data: { peakPriceUsd: peak } });
+        // Track peak / best unrealized gain / deepest drawdown for the
+        // trailing stop and the analytics on every trade record.
+        const excursions = trackExcursions(p.entryPriceUsd, p, price);
+        if (excursions.changed) {
+          await prisma.position.update({ where: { id: p.id }, data: excursions.next });
         }
+        const peak = excursions.next.peakPriceUsd ?? price;
 
-        // liquidity drop since entry → rug signal
+        // liquidity drop since entry → rug signal (baseline stored on the row)
         let liquidityDropPct: number | null = null;
         const liqNow = await getPoolLiquidityUsd(p.mint);
-        const liqKey = `pos:${p.id}:entryLiq`;
         if (liqNow !== null) {
-          const stored = await redis.get(liqKey);
-          if (!stored) await redis.set(liqKey, liqNow.toString(), "EX", 7 * 86400);
-          else liquidityDropPct = ((liqNow - parseFloat(stored)) / parseFloat(stored)) * 100;
+          if (p.entryLiquidityUsd == null) {
+            await prisma.position.update({
+              where: { id: p.id },
+              data: { entryLiquidityUsd: liqNow },
+            });
+          } else if (p.entryLiquidityUsd > 0) {
+            liquidityDropPct = ((liqNow - p.entryLiquidityUsd) / p.entryLiquidityUsd) * 100;
+          }
         }
 
         const decision = evaluateExit(settings, {
@@ -548,14 +713,61 @@ class TradingEngine {
           liquidityDropPct,
         });
         if (decision.exit) {
-          if (await this.isReadOnly()) {
+          if (this.isReadOnly()) {
             logger.warn("risk", `read-only mode: exit signal suppressed for ${p.mint.slice(0, 8)}… (${decision.kind})`);
             return;
           }
           await this.closePosition(p.id, price, decision.portionPct, decision.kind!, decision.reason);
+          return;
         }
+
+        // Narrative deterioration watch (configurable: off | alert | execute)
+        await this.monitorNarrative(p, price);
       })
     );
+  }
+
+  /**
+   * Re-research an open position's narrative on a slow cadence and act on
+   * deterioration per settings.narrativeExitMode: "alert" logs + notifies,
+   * "execute" market-exits. Read-only mode always suppresses execution.
+   */
+  private static readonly NARRATIVE_CHECK_MS = 60_000;
+
+  private async monitorNarrative(
+    p: { id: string; mint: string; entrySignals: unknown },
+    priceUsd: number
+  ): Promise<void> {
+    const settings = this.config.get();
+    if (settings.narrativeExitMode === "off") return;
+    const last = this.lastNarrativeCheck.get(p.id) ?? 0;
+    if (Date.now() - last < TradingEngine.NARRATIVE_CHECK_MS) return;
+    this.lastNarrativeCheck.set(p.id, Date.now());
+
+    try {
+      const token = await prisma.detectedToken.findUnique({ where: { mint: p.mint } });
+      if (!token) return;
+      const metrics = await collectMetrics(this.conn, p.mint, token.migratedAt);
+      const report = await this.narrative.evaluate(token.id, metrics);
+
+      const entry = (p.entrySignals ?? {}) as { narrativeScore?: number };
+      const signal = evaluateNarrativeExit({
+        entryNarrativeScore: entry.narrativeScore ?? null,
+        currentNarrativeScore: report.narrativeScore,
+        currentRugRiskScore: report.rugRiskScore,
+        sentiment: report.sentiment,
+      });
+      if (!signal.exit) return;
+
+      if (settings.narrativeExitMode === "alert" || this.isReadOnly()) {
+        logger.warn("risk", `narrative deteriorating on ${p.mint.slice(0, 8)}…: ${signal.reason} (alert only)`);
+        void notify("rug_warning", "Narrative deteriorating", `${p.mint}\n${signal.reason}`);
+        return;
+      }
+      await this.closePosition(p.id, priceUsd, 100, "narrative_exit", `narrative exit: ${signal.reason}`);
+    } catch (e) {
+      logger.warn("risk", `narrative monitor failed for ${p.mint.slice(0, 8)}…: ${(e as Error).message}`);
+    }
   }
 
   private async closePosition(
@@ -621,7 +833,10 @@ class TradingEngine {
 
       const soldAll = portionPct >= 99.999;
       const proportionalEntry = p.entrySol * (portionPct / 100);
+      // Realized PnL for THIS sell; accumulated onto the position so partial
+      // take-profits are never lost from position-based analytics.
       const pnlSol = receivedSol - proportionalEntry;
+      const totalPnlSol = (p.pnlSol ?? 0) + pnlSol;
       const pnlPct = p.entryPriceUsd ? ((priceUsd - p.entryPriceUsd) / p.entryPriceUsd) * 100 : null;
 
       const token = await prisma.detectedToken.findUnique({ where: { mint: p.mint } });
@@ -654,12 +869,16 @@ class TradingEngine {
                 openKey: null,
                 exitSol: receivedSol,
                 exitPriceUsd: priceUsd,
-                pnlSol,
+                pnlSol: totalPnlSol,
                 pnlPct,
                 exitReason: reason,
                 closedAt: new Date(),
               }
-            : { tokenQty: p.tokenQty - sellQty, entrySol: p.entrySol - proportionalEntry },
+            : {
+                tokenQty: p.tokenQty - sellQty,
+                entrySol: p.entrySol - proportionalEntry,
+                pnlSol: totalPnlSol, // realized so far from partial sells
+              },
         }),
       ]);
       await this.bumpDaily({
@@ -668,7 +887,6 @@ class TradingEngine {
         wins: pnlSol > 0 ? 1 : 0,
         losses: pnlSol <= 0 ? 1 : 0,
       });
-      if (pnlSol <= 0) await redis.set("risk:lastLossAt", Date.now().toString());
       this.lastTradeAt = Date.now();
 
       logger.info("executor", `SELL ${p.mint.slice(0, 8)}… ${kind} pnl ${pnlSol.toFixed(4)} SOL (${latencyMs}ms)`, {
@@ -692,6 +910,7 @@ class TradingEngine {
       }
     } finally {
       this.selling.delete(positionId);
+      this.lastNarrativeCheck.delete(positionId);
     }
   }
 
@@ -711,6 +930,7 @@ class TradingEngine {
     try {
       const snapshots = await prisma.tokenSnapshot.deleteMany({ where: { at: { lt: cutoff } } });
       const scores = await prisma.scoreRecord.deleteMany({ where: { at: { lt: cutoff } } });
+      await prisma.narrativeSnapshot.deleteMany({ where: { at: { lt: cutoff } } });
       // Trades keep their history (tokenId → SetNull); positions are never touched.
       const tokens = await prisma.detectedToken.deleteMany({
         where: {
@@ -739,13 +959,18 @@ class TradingEngine {
     const [open, todayStats, lastLoss] = await Promise.all([
       prisma.position.findMany({ where: { status: "OPEN" } }),
       prisma.dailyStats.findUnique({ where: { date: todayUtc() } }),
-      redis.get("risk:lastLossAt"),
+      // Loss-cooldown anchor: most recent losing close (survives restarts).
+      prisma.position.findFirst({
+        where: { status: "CLOSED", pnlSol: { lte: 0 } },
+        orderBy: { closedAt: "desc" },
+        select: { closedAt: true },
+      }),
     ]);
     return {
       openPositions: open.length,
       exposureSol: open.reduce((a, p) => a + p.entrySol, 0),
       dailyRealizedSol: todayStats?.realizedSol ?? 0,
-      lastLossAt: lastLoss ? new Date(parseInt(lastLoss, 10)) : null,
+      lastLossAt: lastLoss?.closedAt ?? null,
       emergencyStopped: this.emergencyStopped,
     };
   }
@@ -807,6 +1032,20 @@ function normalizeDelta(d: Record<string, number | undefined>) {
 }
 
 // ── entrypoint ──────────────────────────────────────────────────────────────
+
+// @solana/web3.js prints every websocket reconnect failure straight to
+// console.error ("ws error: …") with no way to configure it, flooding logs
+// during an RPC outage. Throttle that one message to once per minute; every
+// other console.error passes through untouched (the health probe still
+// surfaces RPC trouble on the dashboard).
+const rawConsoleError = console.error.bind(console);
+console.error = (...args: unknown[]) => {
+  if (typeof args[0] === "string" && args[0].startsWith("ws error")) {
+    if (Date.now() - lastWsErrorAt < 60_000) return;
+    lastWsErrorAt = Date.now();
+  }
+  rawConsoleError(...args);
+};
 
 validateEnv("engine");
 const engine = new TradingEngine();

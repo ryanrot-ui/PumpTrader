@@ -4,11 +4,15 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireUser, unauthorized } from "@/lib/session";
 import { rateLimit } from "@/lib/rateLimit";
+import { consumeBuiltTx, txMessageHash } from "@/lib/manualTradePending";
 
 /**
  * Manual Mode, step 2: submit the Phantom-signed transaction. The server
- * only relays already-signed bytes — it cannot alter or re-sign them —
- * then confirms and records the trade for the history views.
+ * only relays already-signed bytes — it cannot alter or re-sign them — and
+ * ONLY transactions it built itself in step 1 (message-hash binding, each
+ * consumable exactly once, so a double-click can never double-submit and
+ * the endpoint cannot relay arbitrary transactions). It then confirms and
+ * records the trade with the metadata registered at build time.
  */
 
 const conn = new Connection(
@@ -40,6 +44,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Malformed transaction" }, { status: 400 });
   }
 
+  // Must be a transaction this server built in step 1, unconsumed, for this
+  // user. Signing does not change the message, so the hash matches.
+  const built = consumeBuiltTx(txMessageHash(tx.message.serialize()), user.id);
+  if (!built) {
+    return NextResponse.json(
+      { error: "Unknown or already-submitted transaction — rebuild the trade and try again" },
+      { status: 409 }
+    );
+  }
+
   try {
     const latest = await conn.getLatestBlockhash("confirmed");
     const signature = await conn.sendRawTransaction(tx.serialize(), {
@@ -57,11 +71,13 @@ export async function POST(req: Request) {
       );
     }
 
+    // Record with the metadata registered at BUILD time (server-verified),
+    // not the client-supplied fields — history cannot be poisoned.
     await prisma.trade.create({
       data: {
-        side: parsed.data.side.toUpperCase(),
+        side: built.side.toUpperCase(),
         paper: false,
-        mint: parsed.data.mint,
+        mint: built.mint,
         amountSol: parsed.data.amountSol,
         tokenQty: 0, // exact fill amount visible on-chain via the signature
         signature,
@@ -73,7 +89,7 @@ export async function POST(req: Request) {
         data: {
           level: "info",
           source: "executor",
-          message: `manual ${parsed.data.side} executed via Phantom: ${parsed.data.mint} (${signature})`,
+          message: `manual ${built.side} executed via Phantom: ${built.mint} (${signature})`,
         },
       })
       .catch(() => {});

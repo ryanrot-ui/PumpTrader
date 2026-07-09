@@ -6,10 +6,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-cert
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma
 RUN npm ci --no-audit --no-fund && npx prisma generate
+# Set production AFTER npm ci so devDependencies (tsx, used to run the TS engine)
+# are still installed above, but the process runs in production mode.
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 COPY tsconfig.json vitest.config.ts ./
 COPY src ./src
 COPY docker-entrypoint-engine.sh ./docker-entrypoint-engine.sh
 RUN chmod +x ./docker-entrypoint-engine.sh
-# Idempotent schema push then the worker. restart policy in railway.engine.json
-# / compose gives automatic crash recovery (state rebuilt from Postgres on boot).
+# Least privilege: the worker decrypts wallet keys in memory — never run it
+# as root (matches the web image).
+RUN groupadd -r app && useradd -r -g app app && chown -R app:app /app
+USER app
+# Idempotent schema sync then the worker. The restart policy (Render/compose)
+# gives automatic crash recovery (state rebuilt from Postgres on boot).
 CMD ["./docker-entrypoint-engine.sh"]

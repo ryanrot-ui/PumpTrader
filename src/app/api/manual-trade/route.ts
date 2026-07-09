@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireUser, unauthorized } from "@/lib/session";
 import { rateLimit } from "@/lib/rateLimit";
+import { registerBuiltTx, txMessageHash } from "@/lib/manualTradePending";
 
 /**
  * Manual Mode, step 1: build an UNSIGNED Jupiter swap transaction for the
@@ -44,6 +45,18 @@ export async function POST(req: Request) {
     new PublicKey(mint);
   } catch {
     return NextResponse.json({ error: "Invalid address" }, { status: 400 });
+  }
+
+  // Only trade with wallets the user has explicitly linked to this account
+  // (Phantom connect + signed ownership proof, or an imported bot wallet).
+  const linked = await prisma.wallet.findFirst({
+    where: { userId: user.id, publicKey: walletPublicKey },
+  });
+  if (!linked) {
+    return NextResponse.json(
+      { error: "Wallet not linked to this account — connect and verify it first" },
+      { status: 403 }
+    );
   }
 
   // Pre-trade safety: wallet must exist and hold enough SOL for the trade + fees
@@ -93,6 +106,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Failed to build swap transaction" }, { status: 502 });
     }
     const { swapTransaction } = (await swapRes.json()) as { swapTransaction: string };
+
+    // Register this exact transaction so /submit only relays what we built
+    // here (and each build can be submitted at most once).
+    const unsigned = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
+    registerBuiltTx(txMessageHash(unsigned.message.serialize()), {
+      userId: user.id,
+      mint,
+      side,
+    });
+
     return NextResponse.json({
       transaction: swapTransaction,
       expectedOut: quote.outAmount,

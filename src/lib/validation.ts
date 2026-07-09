@@ -17,6 +17,17 @@ export const scoringWeightsSchema = z.object({
   activity: z.number().min(0).max(100),
 });
 
+/** JSON-configurable narrative-score component weights. */
+export const narrativeWeightsSchema = z.object({
+  socialPresence: z.number().min(0).max(100),
+  attentionVelocity: z.number().min(0).max(100),
+  mentionVelocity: z.number().min(0).max(100),
+  engagement: z.number().min(0).max(100),
+  communityGrowth: z.number().min(0).max(100),
+  crossPlatform: z.number().min(0).max(100),
+  sentiment: z.number().min(0).max(100),
+});
+
 /** Zod schema for every live-editable bot setting. Mirrors prisma Settings. */
 export const settingsSchema = z.object({
   // Buying
@@ -54,9 +65,27 @@ export const settingsSchema = z.object({
   scannerIntervalSec: z.number().int().min(5).max(300),
   scoringWeights: scoringWeightsSchema.nullable(),
 
+  // Narrative intelligence (null = gate disabled)
+  minNarrativeScore: z.number().int().min(0).max(100).nullable(),
+  minMemeScore: z.number().int().min(0).max(100).nullable(),
+  maxRugRiskScore: z.number().int().min(0).max(100).nullable(),
+  narrativeExitMode: z.enum(["off", "alert", "execute"]),
+  narrativeWeights: narrativeWeightsSchema.nullable(),
+
   // Engine
   botEnabled: z.boolean(),
   paperTrading: z.boolean(),
+});
+
+/**
+ * Settings-form updates. botEnabled and paperTrading are deliberately
+ * excluded: they are controlled through /api/bot (start/stop and the
+ * confirmed paper↔live mode switch), so a stale settings form can never
+ * silently flip the trading mode.
+ */
+export const settingsUpdateSchema = settingsSchema.omit({
+  botEnabled: true,
+  paperTrading: true,
 });
 
 export type BotSettings = z.infer<typeof settingsSchema>;

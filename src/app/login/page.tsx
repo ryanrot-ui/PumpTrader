@@ -1,17 +1,47 @@
 "use client";
 
 import { signIn } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+/** Human-readable messages for NextAuth ?error= codes (OAuth callbacks land here). */
+const AUTH_ERRORS: Record<string, string> = {
+  AccessDenied:
+    "This Google account is not authorized — Google sign-in only works for the existing administrator email.",
+  OAuthCallback: "Google sign-in failed — check the OAuth redirect URI configuration.",
+  OAuthSignin: "Could not start Google sign-in — check GOOGLE_CLIENT_ID/SECRET.",
+  Configuration: "Authentication is misconfigured on the server — check the deployment logs.",
+};
+
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [totp, setTotp] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+
+  // Show the Google button only when the provider is actually configured;
+  // surface OAuth callback errors (?error=…) as readable messages.
+  useEffect(() => {
+    fetch("/api/auth/providers")
+      .then((r) => r.json())
+      .then((p: Record<string, unknown>) => setGoogleEnabled(Boolean(p?.google)))
+      .catch(() => {});
+    const code = searchParams.get("error");
+    if (code) setError(AUTH_ERRORS[code] ?? "Sign-in failed — please try again.");
+  }, [searchParams]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,8 +49,21 @@ export default function LoginPage() {
     setError(null);
     const res = await signIn("credentials", { email, password, totp, redirect: false });
     setBusy(false);
-    if (res?.error) setError("Invalid credentials (or missing/wrong 2FA code)");
-    else router.push("/");
+    if (res?.error) {
+      // Distinguish "wrong password" from "the deployment is broken": when
+      // the database is unreachable every login fails, and blaming the
+      // credentials would send the operator down the wrong path.
+      const health = await fetch("/api/healthz", { cache: "no-store" })
+        .then((r) => r.json() as Promise<{ database?: boolean }>)
+        .catch(() => null);
+      if (health && health.database === false) {
+        setError(
+          "The server cannot reach its database — check DATABASE_URL and the deployment logs."
+        );
+      } else {
+        setError("Invalid credentials (or missing/wrong 2FA code)");
+      }
+    } else router.push("/");
   };
 
   return (
@@ -72,13 +115,15 @@ export default function LoginPage() {
           <button className="btn-primary w-full py-2" disabled={busy}>
             {busy ? "Signing in…" : "Sign in"}
           </button>
-          <button
-            type="button"
-            onClick={() => signIn("google", { callbackUrl: "/" })}
-            className="btn-ghost w-full py-2"
-          >
-            Continue with Google
-          </button>
+          {googleEnabled && (
+            <button
+              type="button"
+              onClick={() => signIn("google", { callbackUrl: "/" })}
+              className="btn-ghost w-full py-2"
+            >
+              Continue with Google
+            </button>
+          )}
           <p className="text-xs text-slate-500 text-center">
             No account?{" "}
             <Link href="/register" className="text-accent hover:underline">

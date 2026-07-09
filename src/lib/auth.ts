@@ -4,7 +4,7 @@ import GoogleProvider from "next-auth/providers/google";
 import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
 import bcrypt from "bcryptjs";
 import { prisma } from "./prisma";
-import { redis } from "./redis";
+import { clearWindow, incrementWindow, readWindow } from "./rateLimit";
 import { decryptSecret } from "./crypto";
 import { verifyTotp } from "./totp";
 
@@ -40,27 +40,13 @@ function audit(message: string, meta?: Record<string, unknown>) {
 }
 
 async function bruteForceCheck(key: string): Promise<boolean> {
-  try {
-    const bucket = `auth:fail:${key}`;
-    const count = await redis.get(bucket);
-    return (count ? parseInt(count, 10) : 0) < MAX_ATTEMPTS;
-  } catch {
-    return true; // redis outage must not lock the operator out
-  }
+  return (await readWindow(`auth:fail:${key}`)) < MAX_ATTEMPTS;
 }
 
 async function bruteForceRecord(key: string, failed: boolean): Promise<void> {
-  try {
-    const bucket = `auth:fail:${key}`;
-    if (failed) {
-      const n = await redis.incr(bucket);
-      if (n === 1) await redis.expire(bucket, WINDOW_S);
-    } else {
-      await redis.del(bucket);
-    }
-  } catch {
-    /* non-fatal */
-  }
+  const bucket = `auth:fail:${key}`;
+  if (failed) await incrementWindow(bucket, WINDOW_S);
+  else await clearWindow(bucket);
 }
 
 export const authOptions: NextAuthOptions = {

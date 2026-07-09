@@ -19,30 +19,35 @@ profit by default**.
 ## Architecture
 
 ```
-┌────────────┐   ┌──────────────┐   ┌─────────────────────────────┐
-│  Next.js   │   │  PostgreSQL  │   │        Trading Engine        │
-│  frontend  │◄──┤   (Prisma)   ├──►│  (separate Node worker)      │
-│  + API     │   └──────────────┘   │                              │
-└─────┬──────┘                      │  MigrationScanner (WebSocket │
-      │        ┌──────────────┐     │   onLogs + polling fallback) │
-      └───────►│    Redis     │◄────┤  Collectors → Scoring        │
-   SSE feed,   │ (pub/sub,    │     │  Buy rules → Risk manager    │
-   hot-reload  │  bot state)  │     │  Executor (Jupiter/Raydium   │
-   settings    └──────────────┘     │   route or paper fills)      │
-                                    │  Position monitor (exits)    │
-                                    └─────────────────────────────┘
+┌────────────┐        ┌──────────────┐        ┌─────────────────────────────┐
+│  Next.js   │        │  PostgreSQL  │        │        Trading Engine        │
+│  frontend  │◄──────►│   (Prisma)   │◄──────►│  (separate Node worker)      │
+│  + API     │        │ source of    │        │                              │
+└────────────┘        │ truth for    │        │  MigrationScanner (WebSocket │
+                      │ settings,    │        │   onLogs + polling fallback) │
+   optional           │ engine state,│        │  Collectors → Scoring        │
+   fast path:         │ trades, logs │        │  Buy rules → Risk manager    │
+  ┌───────────┐       └──────────────┘        │  Executor (Jupiter/Raydium   │
+  │   Redis   │  pub/sub: instant reload,     │   route or paper fills)      │
+  │ (OPTIONAL)│  control, live feed           │  Position monitor (exits)    │
+  └───────────┘                               └─────────────────────────────┘
 ```
 
-- **Frontend** — Next.js 14 (App Router), React, TypeScript, TailwindCSS. Dark,
+- **Frontend** — Next.js (App Router), React, TypeScript, TailwindCSS. Dark,
   Photon/Axiom-inspired dashboard. Mobile responsive.
 - **Backend API** — Next.js route handlers: auth, settings, wallets, tokens,
   positions, trades, stats, logs, bot control, SSE live feed.
 - **Trading engine** — standalone worker (`npm run engine`), communicates with the
-  web app only through Postgres + Redis, so either side can restart independently.
-- **Database** — PostgreSQL via Prisma: users, wallets, settings, detected tokens,
-  score records (full breakdowns), snapshots, trades, positions, logs, daily stats.
-- **Redis** — live-editable settings (pub/sub hot reload), bot status/heartbeat,
-  control channel (emergency stop), dashboard live feed, rate limiting.
+  web app only through Postgres (plus optional Redis pub/sub), so either side can
+  restart independently.
+- **Database** — PostgreSQL via Prisma: users, wallets, settings, engine state
+  (status/heartbeat/health/control), detected tokens, score records (full
+  breakdowns), snapshots, trades, positions, logs, daily stats. The schema is
+  applied automatically on boot — no manual setup.
+- **Redis (optional)** — never required: with `REDIS_URL` set, settings reloads,
+  emergency stop and the dashboard live feed become instant (pub/sub) and
+  rate-limit counters are shared across instances; without it, the same features
+  run on short DB polling.
 
 ## Quick start
 
@@ -53,7 +58,7 @@ cp .env.example .env
 #          SOLANA_RPC_URL / SOLANA_WS_URL (a dedicated RPC — Helius, Triton,
 #          QuickNode; the public endpoint rate-limits the scanner immediately)
 
-docker compose up -d postgres redis
+docker compose up -d postgres   # (optionally: postgres redis)
 npm install
 npx prisma db push        # create schema
 npm run dev               # web app on :3000
@@ -64,9 +69,17 @@ Or run the whole stack in Docker: `docker compose up --build` (includes nightly
 Postgres backups to `./backups`, and `restart: always` gives the engine automatic
 crash recovery — it rebuilds its watchlist and open positions from Postgres on boot).
 
+### Deploying to Render + Neon
+
+One-click Blueprint deployment (web + engine worker, Neon PostgreSQL, automatic
+schema initialization, no manual database steps):
+see [`docs/DEPLOY-RENDER.md`](docs/DEPLOY-RENDER.md).
+
 Create the **administrator account** at `http://localhost:3000/register` (works
 exactly once — registration is permanently disabled after the admin exists;
-this is a single-operator system). Then:
+this is a single-operator system). Locked out or the account was created during
+an earlier deployment attempt? Reset it against the production database:
+`npm run admin:reset -- you@example.com 'new-password' [--disable-2fa]`. Then:
 
 1. **Settings → Wallets → Connect Phantom** (watch-only: balances + deposits).
 2. Create a **fresh wallet in Phantom** to act as the bot wallet, fund it with a
@@ -114,12 +127,20 @@ by the engine executes trades, while your main wallet stays in Phantom untouched
 
 ## Configuration
 
-Everything on the Settings page hot-reloads into the engine via Redis pub/sub — no
-restart: buy amount, confidence threshold, liquidity/mcap/holder/volume minimums, max
+Everything on the Settings page hot-reloads into the engine — no restart: buy
+amount, confidence threshold, liquidity/mcap/holder/volume minimums, max
 slippage, take profit, stop loss, trailing stop, time exit, sell portion, max
 SOL/trade, max open positions, daily loss limit, daily profit target, max exposure,
-loss cooldown, paper/live mode, bot on/off, emergency stop (kill switch that also
-exits all open positions).
+loss cooldown, bot on/off, emergency stop (kill switch that also exits all open
+positions). Propagation is instant with Redis configured, or within ~5 seconds via
+DB polling without it.
+
+**Paper ↔ Live** is a dedicated, server-enforced switch (Dashboard → Trading
+mode): enabling live trading requires an explicit confirmation dialog *and* an
+imported bot wallet — the API refuses the switch otherwise. The choice persists
+per user in the database, the engine picks it up immediately, and in paper mode
+no transaction is ever broadcast (fills are simulated at observed prices with a
+slippage haircut, using the identical decision pipeline).
 
 ## Security
 
@@ -133,16 +154,60 @@ exits all open positions).
 - Content-Security-Policy (same-origin), HSTS, X-Frame-Options and friends.
 - Bot wallet keys: AES-256-GCM, key material only in env, decrypted only at
   signing, never logged, never returned by any API, never sent to the client.
+- Phantom linking requires a signed ownership proof (free `signMessage`,
+  verified ed25519 server-side with account binding + a 10-minute replay
+  window) — arbitrary addresses can never be attached to an account.
 - Input validation: zod on every mutating endpoint; SQLi prevented by Prisma
   parameterized queries; XSS by React escaping; rate limiting on sensitive
-  endpoints (Redis).
+  endpoints (Redis-backed when configured, in-memory otherwise).
 - `npm audit --omit=dev`: 0 known vulnerabilities at time of audit.
 - Nightly automated Postgres backups (docker compose `backup` service).
 - Full audit report: [`docs/AUDIT.md`](docs/AUDIT.md) — read the "manual
   verification" list before trading real funds.
 
+## Narrative & social intelligence
+
+Meme coins move on attention, not fundamentals — so alongside the technical
+score, every watched token is continuously researched by a **Narrative
+Intelligence Engine** (`src/engine/narrative/`):
+
+- **Sources** — DexScreener social profile + paid-boost status + windowed
+  activity acceleration (always on, no keys); Reddit public search (mention
+  velocity, engagement, title sentiment); Telegram public channel pages
+  (community size and growth between snapshots); optional X mention counts
+  (`TWITTER_BEARER_TOKEN`); optional AI meme-quality assessment via the
+  Claude API (`ANTHROPIC_API_KEY`, one small structured request per token).
+  Every source degrades gracefully: missing data scores **neutral, never
+  bullish**, and the missing sources are listed on the report.
+- **Scores (0–100, all explained factor-by-factor)** — **Narrative** (social
+  presence, attention velocity, mention velocity, engagement, community
+  growth, cross-platform confirmation, sentiment; weights configurable via
+  `narrativeWeights`; paid DexScreener boosts cap the score — bought attention
+  isn't organic), **Meme strength** (AI-judged originality/humor/trend
+  relevance/branding blended with observed spread), and **Rug risk** (an
+  evidence-based *estimate* from mint/freeze authority, LP lock, liquidity
+  level and trend, holder concentration, dev behavior, suspicious wallets,
+  trading anomalies, sell pressure — it can never claim certainty).
+- **Decision engine** — buys require the technical score *and* every
+  configured narrative gate (`minNarrativeScore`, `minMemeScore`,
+  `maxRugRiskScore`); a configured gate with missing narrative data fails
+  closed. Every pass/fail reason is recorded on the token and the trade.
+- **Continuous monitoring** — open positions are re-researched every minute;
+  on deterioration (rug-risk spike, narrative collapse vs entry, strongly
+  negative sentiment) the bot alerts or exits per `narrativeExitMode`
+  (off / alert / execute).
+- **Learning** — the full signal snapshot at entry is stored on every
+  position; the **Intelligence** page compares signals against realized
+  outcomes (win rate and average ROI per signal bucket) so strategies are
+  tuned on this bot's own history rather than assumptions.
+
 ## Trading modes
 
+- **Paper** (default) — real market data, real scoring, simulated fills; no
+  transaction is ever broadcast. Every simulated trade is stored exactly like a
+  real one and appears in the same analytics (filterable Paper/Live).
+- **Live** — real swaps via Jupiter with the encrypted bot wallet. Enabled only
+  through the confirmation dialog; requires an imported bot wallet.
 - **Manual** — connect Phantom (official wallet adapter); every trade is built
   server-side, signed by you in the Phantom popup, and submitted. No key ever
   leaves the extension.

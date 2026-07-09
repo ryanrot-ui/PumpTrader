@@ -21,6 +21,8 @@ const csp = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Standalone output: a self-contained server bundle for the Docker image
+  // (Render web service). `next build` emits .next/standalone/server.js.
   output: "standalone",
   // Native addon (argon2) must not be bundled by webpack
   serverExternalPackages: ["@node-rs/argon2"],

@@ -44,6 +44,17 @@ export class MigrationScanner {
   private lastPolledSig: string | undefined;
   /** last time either the WebSocket or the poller produced activity */
   public lastActivityAt = Date.now();
+  // ── observability (surfaced on the dashboard health strip) ────────────────
+  /** true while an onLogs subscription id is held (realtime path attempted). */
+  public hasSubscription = false;
+  /** epoch ms of the last completed poll cycle (the reliable HTTP fallback). */
+  public lastPollAt: number | null = null;
+  /** signatures returned by the last poll cycle. */
+  public lastPollCount = 0;
+  /** total migrations handed to the handler since start. */
+  public totalDetected = 0;
+  /** last error hit while polling (rate-limit / unreachable), for diagnostics. */
+  public lastPollError: string | null = null;
 
   constructor(
     conn: Connection,
@@ -94,6 +105,7 @@ export class MigrationScanner {
       await this.conn.removeOnLogsListener(this.subId).catch(() => {});
       this.subId = null;
     }
+    this.hasSubscription = false;
   }
 
   private async resubscribe(): Promise<void> {
@@ -116,24 +128,51 @@ export class MigrationScanner {
         },
         "confirmed"
       );
+      this.hasSubscription = true;
     } catch (e) {
+      this.hasSubscription = false;
       this.onError(e as Error, "subscribe");
       setTimeout(() => this.subscribe(), 5_000);
     }
   }
 
-  /** Catch-up poll over the migration authority's recent signatures. */
+  /** Catch-up poll over the migration authority's recent signatures. This is
+   *  the reliable HTTP fallback — it works even where the realtime websocket
+   *  (onLogs) is unavailable, e.g. the public mainnet RPC, which rejects
+   *  subscriptions with a 403. `lastPollAt` proves the scanner loop is live. */
   private async pollRecent(): Promise<void> {
+    try {
+      const sigs = await this.conn.getSignaturesForAddress(
+        PUMP_MIGRATION_AUTHORITY,
+        { limit: 25, until: this.lastPolledSig },
+        "confirmed"
+      );
+      this.lastPollAt = Date.now();
+      this.lastPollCount = sigs.length;
+      this.lastPollError = null;
+      if (sigs.length > 0) this.lastPolledSig = sigs[0].signature;
+      for (const s of sigs.reverse()) {
+        if (s.err) continue;
+        await this.processSignature(s.signature);
+      }
+    } catch (e) {
+      // Record the reason (rate limit / unreachable) so the dashboard and logs
+      // explain an empty token list instead of failing silently.
+      this.lastPollError = (e as Error).message;
+      throw e;
+    }
+  }
+
+  /** One-shot connectivity probe for the boot diagnostic: confirms the RPC can
+   *  reach the migration authority over HTTP (the polling path). Returns the
+   *  number of recent signatures, or throws the underlying RPC error. */
+  async probe(): Promise<number> {
     const sigs = await this.conn.getSignaturesForAddress(
       PUMP_MIGRATION_AUTHORITY,
-      { limit: 25, until: this.lastPolledSig },
+      { limit: 5 },
       "confirmed"
     );
-    if (sigs.length > 0) this.lastPolledSig = sigs[0].signature;
-    for (const s of sigs.reverse()) {
-      if (s.err) continue;
-      await this.processSignature(s.signature);
-    }
+    return sigs.length;
   }
 
   private async processSignature(signature: string): Promise<void> {
@@ -157,6 +196,7 @@ export class MigrationScanner {
     this.seen.add(`mint:${event.mint}`);
 
     await this.handler(event);
+    this.totalDetected++;
   }
 }
 

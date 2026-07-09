@@ -63,10 +63,19 @@ async function sendDiscord(text: string): Promise<void> {
   }
 }
 
-async function sendEmail(subject: string, body: string): Promise<void> {
+let emailStubWarned = false;
+
+async function sendEmail(_subject: string, _body: string): Promise<void> {
   const { SMTP_HOST, NOTIFY_EMAIL_TO } = process.env;
   if (!SMTP_HOST || !NOTIFY_EMAIL_TO) return;
-  // Minimal SMTP-over-HTTP relay hook. Swap in nodemailer if you prefer a
-  // direct SMTP connection; kept dependency-free here on purpose.
-  logger.info("notify", `email queued: ${subject}`, { to: NOTIFY_EMAIL_TO, body: body.slice(0, 200) });
+  // Honest stub: SMTP delivery is NOT implemented (kept dependency-free).
+  // Warn once so the operator never believes email alerts are flowing —
+  // use Telegram or Discord for delivery today, or wire nodemailer here.
+  if (!emailStubWarned) {
+    emailStubWarned = true;
+    logger.warn(
+      "notify",
+      "SMTP_HOST is set but email delivery is not implemented — use Telegram/Discord notifications, or add an SMTP client here"
+    );
+  }
 }
