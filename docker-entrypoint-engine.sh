@@ -6,6 +6,17 @@
 
 set -e
 
+# Mirror of the web entrypoint's guard: this is the ENGINE image — it serves
+# no HTTP port, so a Render *web service* pointed at it would run a headless
+# engine and fail every health check. Fail loudly with the fix instead.
+if [ "$RENDER_SERVICE_TYPE" = "web" ]; then
+  echo "[engine] FATAL: this container is the ENGINE image but it is running as a web service."
+  echo "[engine]   The dashboard has its own image. On this Render service, set"
+  echo "[engine]   Settings → Build & Deploy → Dockerfile Path = ./Dockerfile"
+  echo "[engine]   (the background worker keeps ./Dockerfile.engine). Exiting."
+  exit 1
+fi
+
 if [ -z "$DATABASE_URL" ]; then
   echo "[engine] FATAL: DATABASE_URL is not set. Configure it (plus WALLET_ENCRYPTION_KEY and SOLANA_RPC_URL) on this service."
   sleep 5
