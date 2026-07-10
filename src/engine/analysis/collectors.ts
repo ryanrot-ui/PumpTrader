@@ -60,16 +60,42 @@ interface DexPair {
   priceChange?: { m5?: number; h1?: number };
   txns?: { m5?: { buys: number; sells: number }; h1?: { buys: number; sells: number } };
   pairCreatedAt?: number;
+  baseToken?: { address?: string; name?: string; symbol?: string };
+  info?: {
+    imageUrl?: string;
+    websites?: Array<{ url?: string }>;
+    socials?: Array<{ type?: string; url?: string }>;
+  };
+}
+
+/**
+ * Deepest pool for a token. Pump.fun graduations create their pool on
+ * PumpSwap (since March 2025; previously Raydium), so those dexes are
+ * preferred; if neither is indexed yet we fall back to any listed pool
+ * rather than pretending the token has no market data.
+ */
+function bestPair(pairs: DexPair[] | null | undefined): DexPair | null {
+  const all = pairs ?? [];
+  const preferred = all.filter((p) => p.dexId === "pumpswap" || p.dexId === "raydium");
+  const pool = preferred.length > 0 ? preferred : all;
+  return pool.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0] ?? null;
 }
 
 async function collectDexScreener(mint: string, m: TokenMetrics): Promise<void> {
   const data = await fetchJson<{ pairs: DexPair[] | null }>(
     `${DEXSCREENER}/latest/dex/tokens/${mint}`
   );
-  const pairs = (data.pairs ?? []).filter((p) => p.dexId === "raydium");
-  if (pairs.length === 0) throw new Error("no raydium pair yet");
-  // Use the deepest Raydium pool
-  const pair = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+  const pair = bestPair(data.pairs);
+  if (!pair) throw new Error("no pool indexed on DexScreener yet");
+
+  m.symbol = m.symbol ?? pair.baseToken?.symbol ?? null;
+  m.name = m.name ?? pair.baseToken?.name ?? null;
+  m.imageUrl = pair.info?.imageUrl ?? null;
+  m.websiteUrl = pair.info?.websites?.[0]?.url ?? null;
+  for (const s of pair.info?.socials ?? []) {
+    if (s.type === "twitter" && s.url) m.twitterUrl = s.url;
+    if (s.type === "telegram" && s.url) m.telegramUrl = s.url;
+  }
 
   m.poolAddress = m.poolAddress ?? pair.pairAddress;
   m.priceUsd = pair.priceUsd ? parseFloat(pair.priceUsd) : null;
@@ -104,31 +130,26 @@ async function solPriceUsd(): Promise<number> {
   }
 }
 
-/** Lightweight price lookup for position monitoring (deepest Raydium pair). */
+/** Lightweight price lookup for position monitoring (deepest pool). */
 export async function getTokenPriceUsd(mint: string): Promise<number | null> {
   try {
     const data = await fetchJson<{ pairs: DexPair[] | null }>(
       `${DEXSCREENER}/latest/dex/tokens/${mint}`
     );
-    const pair = (data.pairs ?? [])
-      .filter((p) => p.dexId === "raydium" && p.priceUsd)
-      .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+    const pair = bestPair(data.pairs?.filter((p) => p.priceUsd));
     return pair?.priceUsd ? parseFloat(pair.priceUsd) : null;
   } catch {
     return null;
   }
 }
 
-/** Liquidity (USD) of the deepest Raydium pair — used for rug monitoring. */
+/** Liquidity (USD) of the deepest pool — used for rug monitoring. */
 export async function getPoolLiquidityUsd(mint: string): Promise<number | null> {
   try {
     const data = await fetchJson<{ pairs: DexPair[] | null }>(
       `${DEXSCREENER}/latest/dex/tokens/${mint}`
     );
-    const pair = (data.pairs ?? [])
-      .filter((p) => p.dexId === "raydium")
-      .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
-    return pair?.liquidity?.usd ?? null;
+    return bestPair(data.pairs)?.liquidity?.usd ?? null;
   } catch {
     return null;
   }
@@ -305,6 +326,10 @@ export function emptyMetrics(mint: string, migratedAt: Date): TokenMetrics {
     washTradingSuspected: null,
     artificialVolumeSuspected: null,
     devReputationScore: null,
+    imageUrl: null,
+    websiteUrl: null,
+    twitterUrl: null,
+    telegramUrl: null,
     ageSinceMigrationSec: Math.floor((Date.now() - migratedAt.getTime()) / 1000),
     missingSources: [],
   };

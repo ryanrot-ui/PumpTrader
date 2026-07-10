@@ -45,3 +45,13 @@ body {
       focus:outline-none focus:border-accent placeholder:text-slate-600;
   }
 }
+
+/* Live-update flash: applied when a polled value changes between refreshes */
+@keyframes flash-bg {
+  from { background-color: rgba(122, 162, 247, 0.28); }
+  to   { background-color: transparent; }
+}
+.animate-flash {
+  animation: flash-bg 1.2s ease-out;
+  border-radius: 4px;
+}

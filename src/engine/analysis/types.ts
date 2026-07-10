@@ -54,6 +54,12 @@ export interface TokenMetrics {
   artificialVolumeSuspected: boolean | null; // volume >> unique wallets
   devReputationScore: number | null; // 0..1 from prior launches, if known
 
+  // Metadata (display only — never scored)
+  imageUrl: string | null;
+  websiteUrl: string | null;
+  twitterUrl: string | null;
+  telegramUrl: string | null;
+
   // Bookkeeping
   ageSinceMigrationSec: number;
   missingSources: string[]; // which collectors failed / were skipped
