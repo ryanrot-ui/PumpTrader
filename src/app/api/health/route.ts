@@ -18,8 +18,10 @@ export async function GET() {
   try {
     [state, lastErrorEntry] = await Promise.all([
       getEngineState(),
+      // 24h window: the strip reports *current* health — a fixed error from
+      // days ago must age out instead of haunting the dashboard.
       prisma.logEntry.findFirst({
-        where: { level: "error", at: { gte: new Date(Date.now() - 7 * 86_400_000) } },
+        where: { level: "error", at: { gte: new Date(Date.now() - 86_400_000) } },
         orderBy: { at: "desc" },
         select: { at: true, source: true, message: true },
       }),
