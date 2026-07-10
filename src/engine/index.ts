@@ -321,7 +321,7 @@ class TradingEngine {
       logger.info(
         "scanner",
         `scanner online — polling path reachable (RPC ${rpcUrl} returned ${count} recent migration-authority signatures). ` +
-          `New Pump.fun→Raydium migrations will appear here as they happen.`
+          `New Pump.fun graduations (PumpSwap pool creations) will appear here as they happen.`
       );
     } catch (e) {
       logger.error(
@@ -367,16 +367,17 @@ class TradingEngine {
 
   private async onMigration(e: MigrationEvent): Promise<void> {
     if (this.watchlist.has(e.mint)) return;
-    const token = await prisma.detectedToken.upsert({
-      where: { mint: e.mint },
-      update: {},
-      create: {
-        mint: e.mint,
-        poolAddress: e.poolAddress,
-        migratedAt: e.migratedAt,
-        verdict: null,
-      },
-    });
+    const existing = await prisma.detectedToken.findUnique({ where: { mint: e.mint } });
+    const token =
+      existing ??
+      (await prisma.detectedToken.create({
+        data: {
+          mint: e.mint,
+          poolAddress: e.poolAddress,
+          migratedAt: e.migratedAt,
+          verdict: null,
+        },
+      }));
     this.watchlist.set(e.mint, {
       tokenId: token.id,
       mint: e.mint,
@@ -384,10 +385,15 @@ class TradingEngine {
       evaluating: false,
     });
     await this.bumpDaily({ scanned: 1 });
-    logger.info("scanner", `migration detected: ${e.mint}`, {
-      pool: e.poolAddress,
-      signature: e.signature,
-    });
+    const meta: Record<string, unknown> = { pool: e.poolAddress, signature: e.signature };
+    if (process.env.SCANNER_DEBUG === "1") {
+      meta.totalTokenRows = await prisma.detectedToken.count().catch(() => undefined);
+    }
+    logger.info(
+      "scanner",
+      `migration detected: ${e.mint}${existing ? " (already in DB, re-watching)" : " (inserted)"}`,
+      meta
+    );
   }
 
   /** Read-only mode: scan and score, but never execute anything.

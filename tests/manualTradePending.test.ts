@@ -10,8 +10,8 @@ const msg = (fill: number) => new Uint8Array(64).fill(fill);
 describe("manual-trade build↔submit binding", () => {
   it("consumes a registered build exactly once (duplicate-submit protection)", () => {
     const hash = txMessageHash(msg(1));
-    registerBuiltTx(hash, { userId: "u1", mint: "MintA", side: "buy" });
-    expect(consumeBuiltTx(hash, "u1")).toEqual({ mint: "MintA", side: "buy" });
+    registerBuiltTx(hash, { userId: "u1", mint: "MintA", side: "buy", amountSol: 0.05 });
+    expect(consumeBuiltTx(hash, "u1")).toEqual({ mint: "MintA", side: "buy", amountSol: 0.05 });
     expect(consumeBuiltTx(hash, "u1")).toBeNull(); // second submit blocked
   });
 
@@ -21,7 +21,7 @@ describe("manual-trade build↔submit binding", () => {
 
   it("rejects a build registered for another user", () => {
     const hash = txMessageHash(msg(3));
-    registerBuiltTx(hash, { userId: "u1", mint: "MintA", side: "sell" });
+    registerBuiltTx(hash, { userId: "u1", mint: "MintA", side: "sell", amountSol: 0.1 });
     expect(consumeBuiltTx(hash, "attacker")).toBeNull();
   });
 

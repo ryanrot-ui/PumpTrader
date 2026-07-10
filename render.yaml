@@ -1,24 +1,30 @@
 # Render Blueprint — deploys the full platform in one click:
-#   web    — Next.js dashboard + API   (Docker)
-#   worker — 24/7 trading engine       (Docker)
+#   web      — Next.js dashboard + API   (Docker)
+#   worker   — 24/7 trading engine       (Docker)
+#   database — managed Render PostgreSQL (shared by both services)
 #
-# Both services share ONE PostgreSQL database. Redis is OPTIONAL (the app
-# coordinates through the database); add REDIS_URL later to enable the pub/sub
-# fast path.
+# Redis is OPTIONAL (the app coordinates through the database); add REDIS_URL
+# later to enable the pub/sub fast path.
 #
 # HOW TO DEPLOY
 #   1. Push this repo to GitHub.
 #   2. Render dashboard → New → Blueprint → pick this repo. Render reads this file.
-#   3. When prompted, paste ONE value: DATABASE_URL (your PostgreSQL connection
-#      string — Neon's free tier works well). NEXTAUTH_SECRET is generated for
-#      you. Everything else is optional (see below).
-#   4. Click Apply. The containers apply the Prisma schema automatically on boot,
-#      so a brand-new empty database works with zero manual commands.
+#   3. Click Apply. Render creates the database and wires DATABASE_URL into both
+#      services automatically; NEXTAUTH_SECRET is generated for you. The
+#      containers apply the Prisma schema on first boot, so no manual SQL ever.
+#   4. Optional: set SOLANA_RPC_URL (+ SOLANA_WS_URL) to a dedicated provider —
+#      without it the scanner is rate-limited and detects little.
 #
-# NEON NOTE: paste Neon's default (pooled) string as DATABASE_URL. The schema is
-# applied over a DIRECT connection that the containers auto-derive by removing
-# "-pooler" from the host — you do NOT need to set DIRECT_URL yourself. Only set
-# DIRECT_URL if your pooled and direct hosts differ by more than "-pooler".
+# USING NEON (or any external PostgreSQL) INSTEAD: after Apply, replace
+# DATABASE_URL on BOTH services with your connection string (Neon: paste the
+# pooled URL — the containers auto-derive the direct endpoint by stripping
+# "-pooler", so DIRECT_URL is only needed if your hosts differ by more).
+
+databases:
+  # Managed PostgreSQL in the same account/region as the services — no
+  # third-party quota that can suspend the database out from under the app.
+  - name: pumptrader-db
+    plan: basic-256mb
 
 services:
   # ── Web: dashboard + API + auth ──────────────────────────────────────────
@@ -29,14 +35,14 @@ services:
     plan: starter
     healthCheckPath: /api/healthz
     envVars:
-      - key: DATABASE_URL # REQUIRED. PostgreSQL connection string (Neon pooled URL is fine).
-        sync: false
+      - key: DATABASE_URL # wired to the managed database above (internal URL)
+        fromDatabase:
+          name: pumptrader-db
+          property: connectionString
       - key: NEXTAUTH_SECRET # generated automatically; no action needed.
         generateValue: true
       # NEXTAUTH_URL is derived from Render's RENDER_EXTERNAL_URL automatically;
       # set it explicitly only when serving from a custom domain.
-      # DIRECT_URL is auto-derived from DATABASE_URL (strip "-pooler"); set it
-      # only if your direct host differs by more than that.
       - key: WALLET_ENCRYPTION_KEY # OPTIONAL — needed only to import a live-trading wallet. openssl rand -hex 32
         sync: false
       - key: SOLANA_RPC_URL # NEEDED FOR SCANNING (see the worker note below). Defaults to public mainnet, which won't detect tokens reliably.
@@ -49,8 +55,10 @@ services:
     dockerfilePath: ./Dockerfile.engine
     plan: starter
     envVars:
-      - key: DATABASE_URL # REQUIRED — the SAME connection string as the web service.
-        sync: false
+      - key: DATABASE_URL # the SAME managed database as the web service
+        fromDatabase:
+          name: pumptrader-db
+          property: connectionString
       - key: WALLET_ENCRYPTION_KEY # must match the web service. Required only for LIVE trading.
         sync: false
       - key: SOLANA_RPC_URL # NEEDED FOR SCANNING. The public default rejects the

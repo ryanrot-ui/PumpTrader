@@ -587,12 +587,9 @@ function ManualTradePanel() {
       const submit = await fetch("/api/manual-trade/submit", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          signedTransaction: signedB64,
-          mint: mint.trim(),
-          side,
-          amountSol: side === "buy" ? parseFloat(amount) : 0,
-        }),
+        // Only the signed bytes: the server records mint/side/amount from its
+        // own build registration, not from anything the client claims.
+        body: JSON.stringify({ signedTransaction: signedB64 }),
       });
       const submitBody = await submit.json();
       if (!submit.ok) throw new Error(submitBody.error ?? "Submission failed");

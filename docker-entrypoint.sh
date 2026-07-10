@@ -17,6 +17,18 @@
 
 set -e
 
+# Guard against the classic misdeployment: pointing a Background Worker at
+# this image. This is the WEB image — a minimal Next.js standalone build that
+# does not contain the engine code — so running it on a worker silently gives
+# you a second web server and no trading engine. Fail loudly instead.
+if [ "$RENDER_SERVICE_TYPE" = "worker" ] || [ "$SERVICE_TYPE" = "engine" ]; then
+  echo "[entrypoint] FATAL: this container is the WEB image but it is running as a background worker."
+  echo "[entrypoint]   The trading engine has its own image. On this Render service, set"
+  echo "[entrypoint]   Settings → Build & Deploy → Dockerfile Path = ./Dockerfile.engine"
+  echo "[entrypoint]   (the web service keeps ./Dockerfile). Exiting."
+  exit 1
+fi
+
 # Render exposes the public URL as RENDER_EXTERNAL_URL; NextAuth needs it as
 # NEXTAUTH_URL. An explicitly configured NEXTAUTH_URL always wins.
 if [ -z "$NEXTAUTH_URL" ] && [ -n "$RENDER_EXTERNAL_URL" ]; then

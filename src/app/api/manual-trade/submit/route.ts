@@ -20,11 +20,10 @@ const conn = new Connection(
   "confirmed"
 );
 
+// Only the signed bytes are accepted; mint/side/amount all come from the
+// server-side build registration, so the client cannot poison trade history.
 const submitSchema = z.object({
   signedTransaction: z.string().min(100).max(20_000), // base64
-  mint: z.string().min(32).max(44),
-  side: z.enum(["buy", "sell"]),
-  amountSol: z.number().min(0),
 });
 
 export async function POST(req: Request) {
@@ -78,7 +77,7 @@ export async function POST(req: Request) {
         side: built.side.toUpperCase(),
         paper: false,
         mint: built.mint,
-        amountSol: parsed.data.amountSol,
+        amountSol: built.amountSol,
         tokenQty: 0, // exact fill amount visible on-chain via the signature
         signature,
         reason: `manual trade via Phantom (approved by ${user.email})`,

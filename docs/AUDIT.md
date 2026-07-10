@@ -1,6 +1,39 @@
 # Production Audit Report — PumpTrader
 
-> **Addendum — sixth round: deployment root-cause fix + full production
+> **Addendum — seventh round: database-outage observability + manual-trade
+> metadata binding (2026-07).** Driven by a real production incident: Neon
+> became unreachable (`P1001`) while the web service kept serving, and the
+> dashboard blamed the engine worker ("isn't reporting") because `/api/health`
+> itself died on the DB call.
+>
+> - **`/api/health` now survives a database outage.** It authenticates via
+>   the signed session JWT alone (no DB round-trip) and, when Prisma cannot
+>   reach PostgreSQL, returns `dbConnected:false` plus the human-readable
+>   cause (e.g. ``Can't reach database server at `host:port` ``) instead of a
+>   500. Verified against a live server pointed at a dead DB address.
+> - **The dashboard reports the true fault.** A dedicated red banner explains
+>   that the *database* is unreachable (with Neon-specific guidance: check the
+>   compute is Active / quota not exhausted, and that `DATABASE_URL` on both
+>   Render services matches the current Neon connection string). The
+>   engine-worker banner is suppressed while the DB is down, and the Engine
+>   indicator shows "Unknown" — heartbeats live in the DB, so engine state is
+>   unknowable during the outage.
+> - **Deployment misconfiguration is now self-diagnosing.** A production
+>   worker was found running the *web* image (`Dockerfile` instead of
+>   `Dockerfile.engine`), silently serving a second dashboard with no engine.
+>   Both entrypoints now check Render's `RENDER_SERVICE_TYPE` and exit with
+>   the exact setting to change when booted on the wrong service type.
+>   `render.yaml` additionally provisions a managed Render PostgreSQL and
+>   wires `DATABASE_URL` into both services via `fromDatabase`, removing the
+>   dependency on an external free-tier database that can suspend mid-month
+>   (the original Neon `P1001` outage) and the hand-pasted env vars that were
+>   lost during service reconfiguration.
+> - **Manual-trade `amountSol` is now server-derived.** The submit endpoint
+>   previously recorded a client-supplied `amountSol` in trade history (the
+>   last client-controlled field there). The build step now registers it with
+>   the pending transaction (SOL in for buys, quoted SOL out for sells) and
+>   the submit endpoint accepts only the signed bytes — mint, side, and amount
+>   all come from the server-side build registration. deployment root-cause fix + full production
 > simulation (2026-07).**
 >
 > **Root cause of "table public.User does not exist" on first boot (fixed).**

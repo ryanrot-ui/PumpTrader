@@ -8,6 +8,9 @@ import { timeAgo } from "@/components/ui";
  * heartbeat yet (worker not deployed / still booting).
  */
 export interface Health {
+  /** false = the web service itself cannot reach PostgreSQL. */
+  dbConnected?: boolean | null;
+  dbError?: string | null;
   engineAlive: boolean;
   status: string;
   readOnly: boolean;
@@ -65,6 +68,7 @@ function Indicator({
  * list is never unexplained.
  */
 export function HealthIndicators({ health }: { health: Health | null | undefined }) {
+  const dbDown = health?.dbConnected === false;
   const engineAlive = !!health?.engineAlive;
   // Scanner is "active" when the engine is alive and a poll cycle completed
   // recently (the reliable HTTP path) OR the realtime websocket is connected.
@@ -79,8 +83,14 @@ export function HealthIndicators({ health }: { health: Health | null | undefined
         <Indicator
           label="Engine Running"
           ok={engineAlive}
-          value={engineAlive ? (health?.readOnly ? "Running · read-only" : "Running") : "Offline"}
-          title={engineAlive ? "The trading engine worker is sending heartbeats." : "No recent heartbeat — the engine worker is not running."}
+          value={dbDown ? "Unknown" : engineAlive ? (health?.readOnly ? "Running · read-only" : "Running") : "Offline"}
+          title={
+            dbDown
+              ? "Heartbeats live in the database, which is unreachable — engine state is unknown."
+              : engineAlive
+                ? "The trading engine worker is sending heartbeats."
+                : "No recent heartbeat — the engine worker is not running."
+          }
         />
         <Indicator
           label="RPC Connected"
@@ -142,7 +152,17 @@ export function HealthIndicators({ health }: { health: Health | null | undefined
           Scanner RPC error: {health.scannerError}
         </div>
       )}
-      {!engineAlive && (
+      {dbDown && (
+        <div className="mt-3 text-xs rounded-md border border-loss/40 bg-loss/10 text-loss px-3 py-2">
+          The web service cannot reach its PostgreSQL database
+          {health?.dbError ? <> (<span className="font-mono">{health.dbError}</span>)</> : null}. Engine
+          status is unknown until the database is back. On Neon: open the console and check that the
+          compute is <em>Active</em> (free-plan computes stop when the monthly quota is used up), and
+          that <span className="font-mono">DATABASE_URL</span> on both Render services matches the
+          current connection string shown in Neon.
+        </div>
+      )}
+      {!engineAlive && !dbDown && (
         <div className="mt-3 text-xs rounded-md border border-loss/40 bg-loss/10 text-loss px-3 py-2">
           The engine worker isn’t reporting. On Render, confirm the{" "}
           <span className="font-mono">pumptrader-engine</span> worker is deployed and running with the

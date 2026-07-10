@@ -108,12 +108,15 @@ export async function POST(req: Request) {
     const { swapTransaction } = (await swapRes.json()) as { swapTransaction: string };
 
     // Register this exact transaction so /submit only relays what we built
-    // here (and each build can be submitted at most once).
+    // here (and each build can be submitted at most once). amountSol is
+    // derived here, never trusted from the submit request: SOL in for buys,
+    // the quoted SOL out for sells.
     const unsigned = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
     registerBuiltTx(txMessageHash(unsigned.message.serialize()), {
       userId: user.id,
       mint,
       side,
+      amountSol: side === "buy" ? amount : Number(quote.outAmount ?? 0) / 1e9,
     });
 
     return NextResponse.json({

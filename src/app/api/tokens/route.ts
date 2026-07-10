@@ -19,6 +19,11 @@ export async function GET(req: Request) {
     },
   });
 
+  if (process.env.SCANNER_DEBUG === "1") {
+    const total = await prisma.detectedToken.count().catch(() => -1);
+    console.log(`[scanner-debug] /api/tokens: returning ${tokens.length} of ${total} rows (limit ${limit})`);
+  }
+
   return NextResponse.json(
     tokens.map((t) => ({
       mint: t.mint,
