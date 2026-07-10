@@ -42,121 +42,150 @@ function candidate(): TokenMetrics {
   return m;
 }
 
-describe("evaluateBuyRules", () => {
-  it("approves a token passing every rule", () => {
+describe("evaluateBuyRules — three-layer decision", () => {
+  it("buys a token passing safety gates and the score threshold", () => {
     const m = candidate();
-    const decision = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
-    expect(decision.buy).toBe(true);
-    expect(decision.reasons[0]).toMatch(/score/);
+    const d = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
+    expect(d.buy).toBe(true);
+    expect(d.action).toBe("buy");
+    expect(d.reasons[0]).toMatch(/score/);
+    expect(d.trace.length).toBeGreaterThan(8);
+    expect(d.confidence).toBeGreaterThan(80);
   });
 
-  it("rejects when score is under the threshold and says why", () => {
+  it("WATCHes (not ignores) a safe token below the score threshold", () => {
     const m = candidate();
-    m.topHolderPct = 30; // tank the score
+    m.topHolderPct = 30; // tanks the score, but not a scam signal
     m.top10HolderPct = 70;
     m.freshWalletPct = 80;
-    const decision = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
-    expect(decision.buy).toBe(false);
-    expect(decision.reasons.some((r) => r.includes("below threshold"))).toBe(true);
+    const d = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
+    expect(d.buy).toBe(false);
+    expect(d.action).toBe("watch");
+    expect(d.reasons.some((r) => r.includes("below acceptance threshold"))).toBe(true);
   });
 
-  it("rejects on any critical red flag even with a perfect score", () => {
+  it("IGNOREs on frozen transfers (safety gate) even with a perfect score", () => {
     const m = candidate();
     m.freezeAuthorityRevoked = false;
-    const decision = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
-    expect(decision.buy).toBe(false);
-    expect(decision.reasons.some((r) => r.includes("critical red flag"))).toBe(true);
+    const d = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
+    expect(d.buy).toBe(false);
+    expect(d.action).toBe("ignore");
+    expect(d.reasons.some((r) => r.includes("freeze authority"))).toBe(true);
   });
 
-  it("rejects when liquidity, holders, or volume are below minimums", () => {
+  it("IGNOREs an active mint authority and a suspected honeypot", () => {
+    const m = candidate();
+    m.mintAuthorityRevoked = false;
+    m.isHoneypotSuspected = true;
+    const d = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
+    expect(d.action).toBe("ignore");
+    expect(d.reasons.some((r) => r.includes("mint authority"))).toBe(true);
+    expect(d.reasons.some((r) => r.includes("honeypot"))).toBe(true);
+  });
+
+  it("IGNOREs liquidity below the configurable minimum (unknown fails closed)", () => {
     const m = candidate();
     m.liquiditySol = 10;
-    m.holderCount = 20;
-    m.volume5mUsd = 100;
-    const decision = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
-    expect(decision.buy).toBe(false);
-    expect(decision.reasons.length).toBeGreaterThanOrEqual(3);
+    const d = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
+    expect(d.action).toBe("ignore");
+    expect(d.reasons.some((r) => r.includes("liquidity"))).toBe(true);
+
+    const m2 = candidate();
+    m2.liquiditySol = null;
+    expect(evaluateBuyRules(m2, scoreToken(m2), DEFAULT_SETTINGS).action).toBe("ignore");
   });
 
-  it("rejects unknown market cap rather than guessing", () => {
+  it("does NOT reject on holders/volume/whale/dev/momentum — they become advisories", () => {
+    const m = candidate();
+    m.holderCount = 20; // below preferred minimum
+    m.volume5mUsd = 100; // thin
+    m.devWalletPct = 8; // above preferred max
+    m.momentum = -0.5; // falling
+    const d = evaluateBuyRules(m, scoreToken(m), { ...DEFAULT_SETTINGS, maxDevPct: 5 });
+    // Never "ignore" for these: outcome is buy or watch depending on score.
+    expect(d.action === "buy" || d.action === "watch").toBe(true);
+    expect(d.warnings.some((w) => w.includes("holders"))).toBe(true);
+    expect(d.warnings.some((w) => w.includes("volume"))).toBe(true);
+    expect(d.warnings.some((w) => w.includes("dev"))).toBe(true);
+    expect(d.warnings.some((w) => w.includes("momentum"))).toBe(true);
+  });
+
+  it("unknown market cap is an advisory, not a rejection", () => {
     const m = candidate();
     m.marketCapUsd = null;
-    const decision = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
-    expect(decision.buy).toBe(false);
-    expect(decision.reasons.some((r) => r.includes("market cap unknown"))).toBe(true);
+    const d = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
+    expect(d.action === "buy" || d.action === "watch").toBe(true);
+    expect(d.warnings.some((w) => w.includes("market cap"))).toBe(true);
+    expect(d.confidence).toBeLessThan(100);
   });
 
-  it("rejects falling momentum", () => {
-    const m = candidate();
-    m.momentum = -0.5;
-    const decision = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
-    expect(decision.buy).toBe(false);
-    expect(decision.reasons.some((r) => r.includes("momentum"))).toBe(true);
-  });
-
-  it("rejects weak buy pressure below the configurable minimum", () => {
-    const m = candidate();
-    m.buySellRatio = 1.0;
-    const decision = evaluateBuyRules(m, scoreToken(m), { ...DEFAULT_SETTINGS, minBuyPressure: 1.5 });
-    expect(decision.buy).toBe(false);
-    expect(decision.reasons.some((r) => r.includes("buy pressure"))).toBe(true);
-  });
-
-  it("rejects whale and dev concentration over the configured caps", () => {
-    const m = candidate();
-    m.topHolderPct = 12;
-    m.devWalletPct = 8;
-    const settings = { ...DEFAULT_SETTINGS, maxWhalePct: 10, maxDevPct: 5 };
-    const decision = evaluateBuyRules(m, scoreToken(m), settings);
-    expect(decision.buy).toBe(false);
-    expect(decision.reasons.some((r) => r.includes("whale"))).toBe(true);
-    expect(decision.reasons.some((r) => r.includes("dev holds"))).toBe(true);
-  });
-
-  it("rejects liquidity above the optional ceiling", () => {
+  it("still enforces the optional liquidity ceiling as a safety gate", () => {
     const m = candidate();
     m.liquiditySol = 900;
-    const decision = evaluateBuyRules(m, scoreToken(m), { ...DEFAULT_SETTINGS, maxLiquiditySol: 500 });
-    expect(decision.buy).toBe(false);
-    expect(decision.reasons.some((r) => r.includes("above maximum"))).toBe(true);
+    const d = evaluateBuyRules(m, scoreToken(m), { ...DEFAULT_SETTINGS, maxLiquiditySol: 500 });
+    expect(d.action).toBe("ignore");
+    expect(d.reasons.some((r) => r.includes("maximum"))).toBe(true);
+  });
+
+  it("records every rule in the trace with pass/fail and layer", () => {
+    const m = candidate();
+    const d = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS);
+    for (const r of d.trace) {
+      expect(typeof r.passed).toBe("boolean");
+      expect(["safety", "opportunity", "risk"]).toContain(r.layer);
+      expect(r.detail.length).toBeGreaterThan(0);
+    }
+    expect(d.trace.some((r) => r.layer === "safety" && r.hard)).toBe(true);
+    expect(d.trace.some((r) => r.layer === "risk" && !r.hard)).toBe(true);
   });
 });
 
 describe("narrative gates", () => {
-  const gated = { ...DEFAULT_SETTINGS, minNarrativeScore: 60, minMemeScore: 50, maxRugRiskScore: 40 };
-
   it("no gates configured → narrative optional", () => {
     const m = candidate();
     const d = evaluateBuyRules(m, scoreToken(m), DEFAULT_SETTINGS, null);
     expect(d.buy).toBe(true);
   });
 
-  it("gates configured but narrative unavailable → fails closed", () => {
+  it("rug-risk gate configured but narrative unavailable → fails closed (safety)", () => {
     const m = candidate();
-    const d = evaluateBuyRules(m, scoreToken(m), gated, null);
-    expect(d.buy).toBe(false);
-    expect(d.reasons.some((r) => r.includes("narrative"))).toBe(true);
+    const d = evaluateBuyRules(m, scoreToken(m), { ...DEFAULT_SETTINGS, maxRugRiskScore: 40 }, null);
+    expect(d.action).toBe("ignore");
+    expect(d.reasons.some((r) => r.includes("rug"))).toBe(true);
   });
 
-  it("passing narrative satisfies all gates and appears in the reasons", () => {
+  it("high-confidence rug risk over the cap is a hard rejection", () => {
     const m = candidate();
-    const d = evaluateBuyRules(m, scoreToken(m), gated, {
+    const d = evaluateBuyRules(m, scoreToken(m), { ...DEFAULT_SETTINGS, maxRugRiskScore: 40 }, {
+      narrativeScore: 80,
+      memeScore: 70,
+      rugRiskScore: 75,
+    });
+    expect(d.action).toBe("ignore");
+    expect(d.reasons.some((r) => r.includes("rug-risk"))).toBe(true);
+  });
+
+  it("narrative/meme minimums are advisories, not rejections", () => {
+    const m = candidate();
+    const d = evaluateBuyRules(
+      m,
+      scoreToken(m),
+      { ...DEFAULT_SETTINGS, minNarrativeScore: 60, minMemeScore: 50 },
+      { narrativeScore: 40, memeScore: 30, rugRiskScore: 20 }
+    );
+    expect(d.action === "buy" || d.action === "watch").toBe(true);
+    expect(d.warnings.some((w) => w.includes("narrative"))).toBe(true);
+    expect(d.warnings.some((w) => w.includes("meme"))).toBe(true);
+  });
+
+  it("passing narrative appears in the buy reasons", () => {
+    const m = candidate();
+    const d = evaluateBuyRules(m, scoreToken(m), { ...DEFAULT_SETTINGS, maxRugRiskScore: 40 }, {
       narrativeScore: 75,
       memeScore: 65,
       rugRiskScore: 25,
     });
     expect(d.buy).toBe(true);
     expect(d.reasons.some((r) => r.includes("narrative 75"))).toBe(true);
-  });
-
-  it("each failing gate is reported individually", () => {
-    const m = candidate();
-    const d = evaluateBuyRules(m, scoreToken(m), gated, {
-      narrativeScore: 40,
-      memeScore: 30,
-      rugRiskScore: 70,
-    });
-    expect(d.buy).toBe(false);
-    expect(d.reasons.filter((r) => /narrative|meme|rug/.test(r)).length).toBe(3);
   });
 });

@@ -27,6 +27,14 @@ interface TokenRow {
   migratedAt: string;
   verdict: string | null;
   rejectionReasons: string[];
+  decisionTrace: Array<{
+    rule: string;
+    layer: "safety" | "opportunity" | "risk";
+    hard: boolean;
+    passed: boolean;
+    detail: string;
+  }> | null;
+  confidence: number | null;
   score: number | null;
   narrativeScore: number | null;
   memeScore: number | null;
@@ -331,25 +339,28 @@ function DecisionPanel({ token, threshold }: { token: TokenRow; threshold: numbe
       ? { label: "BOUGHT", cls: "bg-profit/20 text-profit", why: "Passed every rule — the engine opened a position." }
       : token.verdict === "BUY_CANDIDATE"
         ? { label: "BUY CANDIDATE", cls: "bg-profit/20 text-profit", why: "Passed every rule; awaiting execution/risk checks." }
-        : token.verdict == null
-          ? { label: "WATCH", cls: "bg-warn/10 text-warn", why: "Still inside the evaluation window — data may not be fully indexed yet." }
-          : token.verdict === "IGNORED"
-            ? { label: "EXPIRED", cls: "bg-surface-overlay text-slate-500", why: "The 45-minute watch window ended without a qualifying setup." }
-            : token.critical
-              ? { label: "AVOID", cls: "bg-loss/20 text-loss", why: "A critical risk flag fired — this blocks buying outright." }
-              : score != null && threshold != null && score >= threshold
-                ? { label: "WATCH", cls: "bg-warn/10 text-warn", why: "Score cleared the threshold but a hard rule failed (see below)." }
-                : { label: "AVOID", cls: "bg-loss/20 text-loss", why: "Score below the acceptance threshold and/or hard rules failed." };
+        : token.verdict === "WATCH"
+          ? { label: "WATCH", cls: "bg-warn/10 text-warn", why: "All safety gates passed — the score just hasn't cleared your acceptance threshold. Re-evaluated continuously while the window is open." }
+          : token.verdict == null
+            ? { label: "WATCH", cls: "bg-warn/10 text-warn", why: "Still inside the evaluation window — data may not be fully indexed yet." }
+            : token.verdict === "IGNORED"
+              ? { label: "EXPIRED", cls: "bg-surface-overlay text-slate-500", why: "The 45-minute watch window ended without a qualifying setup." }
+              : token.critical
+                ? { label: "AVOID", cls: "bg-loss/20 text-loss", why: "A critical risk flag fired — this blocks buying outright." }
+                : { label: "AVOID", cls: "bg-loss/20 text-loss", why: "A safety gate failed — likely-scam or fundamentally unsafe conditions only (see the rule trace below)." };
 
   const summary =
-    `Scored ${score ?? "—"}/100${threshold != null ? ` against a ≥${threshold} acceptance threshold` : ""}. ` +
+    `Scored ${score ?? "—"}/100${threshold != null ? ` against a ≥${threshold} acceptance threshold` : ""}` +
+    `${token.confidence != null ? `, with ${token.confidence}% of decision inputs available` : ""}. ` +
     (token.verdict === "REJECTED"
-      ? `Rejected: ${token.rejectionReasons.slice(0, 3).join("; ") || "see rules below"}.`
-      : token.verdict === "BOUGHT" || token.verdict === "BUY_CANDIDATE"
-        ? `Accepted — ${token.greenFlags.slice(0, 3).join("; ") || "all rules passed"}.`
-        : token.verdict === "IGNORED"
-          ? "No decision was reached before the watch window expired."
-          : "Evaluation in progress.") +
+      ? `Safety gate failed: ${token.rejectionReasons.slice(0, 3).join("; ") || "see rules below"}.`
+      : token.verdict === "WATCH"
+        ? "Safe to trade but below your score threshold — watching."
+        : token.verdict === "BOUGHT" || token.verdict === "BUY_CANDIDATE"
+          ? `Accepted — ${token.greenFlags.slice(0, 3).join("; ") || "all rules passed"}.`
+          : token.verdict === "IGNORED"
+            ? "No decision was reached before the watch window expired."
+            : "Evaluation in progress.") +
     (neutral.length > 0 ? ` ${neutral.length} input(s) had no data and scored neutral.` : "");
 
   return (
@@ -382,12 +393,47 @@ function DecisionPanel({ token, threshold }: { token: TokenRow; threshold: numbe
           {monitored ? "● Monitoring live" : "○ No longer monitored"}
         </span>
         {token.snapshot?.at && <span>last evaluated {timeAgo(token.snapshot.at)} ago</span>}
+        {token.confidence != null && (
+          <span title="Share of the decision inputs (price, liquidity, holders, authorities, …) that had data at evaluation time.">
+            confidence {token.confidence}%
+          </span>
+        )}
         {neutral.length > 0 && (
           <span title={`No data for: ${neutral.join(", ")} — these scored neutral (0.5), never bullish.`}>
             {neutral.length} input(s) missing data
           </span>
         )}
       </div>
+
+      {token.decisionTrace && token.decisionTrace.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-surface-border/50">
+          <div
+            className="stat-label mb-2"
+            title="Every rule the execution engine evaluated. HARD rules (safety gates) can reject a token; advisory rules only inform the score and this display."
+          >
+            Execution rule trace
+          </div>
+          <div className="space-y-1">
+            {token.decisionTrace.map((r) => (
+              <div key={r.rule} className="flex items-start gap-2 text-xs">
+                <span className={r.passed ? "text-profit" : r.hard ? "text-loss" : "text-warn"}>
+                  {r.passed ? "✓" : "✗"}
+                </span>
+                <span className="w-36 shrink-0 text-slate-400">{r.rule}</span>
+                <span
+                  className={`shrink-0 text-[9px] px-1 rounded uppercase ${
+                    r.hard ? "bg-loss/10 text-loss" : "bg-surface-overlay text-slate-500"
+                  }`}
+                  title={r.hard ? "Safety gate — failure rejects the token" : "Advisory — informs the score and risk display, never rejects"}
+                >
+                  {r.hard ? "hard" : r.layer === "opportunity" ? "score" : "advisory"}
+                </span>
+                <span className="text-slate-500 min-w-0">{r.detail}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
