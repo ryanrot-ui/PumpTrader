@@ -436,7 +436,12 @@ class TradingEngine {
         this.narrative.forget(t.mint);
         await prisma.detectedToken.update({
           where: { id: t.tokenId },
-          data: { verdict: "IGNORED", rejectionReasons: ["watch window expired"] },
+          data: {
+            verdict: "IGNORED",
+            rejectionReasons: [
+              "watch window (45 min) expired without a buy decision — the last full evaluation is preserved in the decision trace",
+            ],
+          },
         });
         return;
       }
@@ -500,6 +505,12 @@ class TradingEngine {
       }
 
       const decision = evaluateBuyRules(metrics, score, settings, narrativeReport);
+      // Full rule-by-rule trace + data confidence persisted on every
+      // evaluation, so the dashboard can always explain the decision.
+      const decisionData = {
+        decisionTrace: JSON.parse(JSON.stringify(decision.trace)),
+        confidence: decision.confidence,
+      };
       if (!decision.buy) {
         // No market data at all (pool not indexed on DexScreener yet) means
         // the rejection would be an artifact of missing inputs, not a verdict
@@ -509,16 +520,20 @@ class TradingEngine {
           logger.debug("scoring", `no market data yet for ${t.mint.slice(0, 8)}… — still evaluating`);
           return;
         }
+        // Three-layer decision: only safety-gate failures reject (IGNORE);
+        // a safe token below the score threshold stays WATCHed and is
+        // re-evaluated every cycle until the window expires.
+        const verdict = decision.action === "watch" ? "WATCH" : "REJECTED";
         await prisma.detectedToken.update({
           where: { id: t.tokenId },
-          data: { verdict: "REJECTED", rejectionReasons: decision.reasons },
+          data: { verdict, rejectionReasons: decision.reasons, ...decisionData },
         });
-        if (!this.rejectedOnce.has(t.mint)) {
+        if (verdict === "REJECTED" && !this.rejectedOnce.has(t.mint)) {
           this.rejectedOnce.add(t.mint);
           await this.bumpDaily({ rejected: 1 });
           if (this.rejectedOnce.size > 10_000) this.rejectedOnce.clear();
         }
-        logger.debug("scoring", `rejected ${t.mint.slice(0, 8)}… (${score.total})`, {
+        logger.debug("scoring", `${verdict.toLowerCase()} ${t.mint.slice(0, 8)}… (${score.total})`, {
           reasons: decision.reasons,
         });
         return;
@@ -526,7 +541,7 @@ class TradingEngine {
 
       await prisma.detectedToken.update({
         where: { id: t.tokenId },
-        data: { verdict: "BUY_CANDIDATE" },
+        data: { verdict: "BUY_CANDIDATE", rejectionReasons: [], ...decisionData },
       });
       if (this.isReadOnly()) {
         logger.info("risk", `read-only mode: would have bought ${t.mint.slice(0, 8)}… (score ${score.total})`);

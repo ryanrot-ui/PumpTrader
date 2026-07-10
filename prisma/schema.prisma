@@ -128,8 +128,12 @@ model DetectedToken {
 
   // latest evaluation
   score      Int?
-  verdict    String? // BUY_CANDIDATE | REJECTED | BOUGHT | IGNORED
+  verdict    String? // BUY_CANDIDATE | WATCH | REJECTED | BOUGHT | IGNORED
   rejectionReasons String[] @default([])
+  // Full rule-by-rule execution decision (RuleResult[] from trading/rules.ts)
+  decisionTrace Json?
+  // 0-100: share of decision inputs that had data at evaluation time
+  confidence Int?
 
   // Latest narrative-intelligence evaluation (full history in narrative[])
   narrativeScore Int?

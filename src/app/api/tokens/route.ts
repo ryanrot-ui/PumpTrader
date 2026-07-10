@@ -37,6 +37,8 @@ export async function GET(req: Request) {
       detectedAt: t.detectedAt,
       verdict: t.verdict,
       rejectionReasons: t.rejectionReasons,
+      decisionTrace: t.decisionTrace,
+      confidence: t.confidence,
       score: t.scores[0]?.total ?? t.score ?? null,
       greenFlags: t.scores[0]?.greenFlags ?? [],
       redFlags: t.scores[0]?.redFlags ?? [],
