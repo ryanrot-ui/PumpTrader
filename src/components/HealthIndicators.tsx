@@ -171,7 +171,8 @@ export function HealthIndicators({ health }: { health: Health | null | undefined
       )}
       {health?.lastError && (
         <div className="mt-2 text-xs text-loss truncate" title={health.lastError.message}>
-          ⚠ [{health.lastError.source}] {health.lastError.message}
+          ⚠ <span className="text-slate-500">{timeAgo(new Date(health.lastError.at))} ago</span>{" "}
+          [{health.lastError.source}] {health.lastError.message}
         </div>
       )}
     </div>
