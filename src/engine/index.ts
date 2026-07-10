@@ -368,16 +368,27 @@ class TradingEngine {
   private async onMigration(e: MigrationEvent): Promise<void> {
     if (this.watchlist.has(e.mint)) return;
     const existing = await prisma.detectedToken.findUnique({ where: { mint: e.mint } });
+    // The websocket and polling paths can race on the same brand-new mint;
+    // the unique(mint) constraint makes the second insert fail (P2002), so
+    // fall back to reading the row the winner created.
     const token =
       existing ??
-      (await prisma.detectedToken.create({
-        data: {
-          mint: e.mint,
-          poolAddress: e.poolAddress,
-          migratedAt: e.migratedAt,
-          verdict: null,
-        },
-      }));
+      (await prisma.detectedToken
+        .create({
+          data: {
+            mint: e.mint,
+            poolAddress: e.poolAddress,
+            migratedAt: e.migratedAt,
+            verdict: null,
+          },
+        })
+        .catch(async (err) => {
+          if ((err as { code?: string }).code === "P2002") {
+            const row = await prisma.detectedToken.findUnique({ where: { mint: e.mint } });
+            if (row) return row;
+          }
+          throw err;
+        }));
     this.watchlist.set(e.mint, {
       tokenId: token.id,
       mint: e.mint,
@@ -460,7 +471,15 @@ class TradingEngine {
         }),
         prisma.detectedToken.update({
           where: { id: t.tokenId },
-          data: { score: score.total, symbol: metrics.symbol ?? undefined },
+          data: {
+            score: score.total,
+            symbol: metrics.symbol ?? undefined,
+            name: metrics.name ?? undefined,
+            imageUrl: metrics.imageUrl ?? undefined,
+            websiteUrl: metrics.websiteUrl ?? undefined,
+            twitterUrl: metrics.twitterUrl ?? undefined,
+            telegramUrl: metrics.telegramUrl ?? undefined,
+          },
         }),
       ]);
 
@@ -482,6 +501,14 @@ class TradingEngine {
 
       const decision = evaluateBuyRules(metrics, score, settings, narrativeReport);
       if (!decision.buy) {
+        // No market data at all (pool not indexed on DexScreener yet) means
+        // the rejection would be an artifact of missing inputs, not a verdict
+        // on the token. Keep it EVALUATING — the next cycle retries, and the
+        // watch-window expiry still guarantees a terminal state.
+        if (metrics.priceUsd == null && metrics.liquidityUsd == null) {
+          logger.debug("scoring", `no market data yet for ${t.mint.slice(0, 8)}… — still evaluating`);
+          return;
+        }
         await prisma.detectedToken.update({
           where: { id: t.tokenId },
           data: { verdict: "REJECTED", rejectionReasons: decision.reasons },

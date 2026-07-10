@@ -120,6 +120,12 @@ model DetectedToken {
   migratedAt  DateTime
   detectedAt  DateTime @default(now())
 
+  // Display metadata (from DexScreener pair info; refreshed on evaluation)
+  imageUrl    String?
+  websiteUrl  String?
+  twitterUrl  String?
+  telegramUrl String?
+
   // latest evaluation
   score      Int?
   verdict    String? // BUY_CANDIDATE | REJECTED | BOUGHT | IGNORED

@@ -43,6 +43,10 @@ const base = (over: Partial<TokenMetrics> = {}): TokenMetrics => ({
   artificialVolumeSuspected: false,
   devReputationScore: null,
   ageSinceMigrationSec: 600,
+  imageUrl: null,
+  websiteUrl: null,
+  twitterUrl: null,
+  telegramUrl: null,
   missingSources: [],
   ...over,
 });

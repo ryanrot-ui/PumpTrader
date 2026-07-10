@@ -9,7 +9,9 @@ const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
+  // https: for token logos (DexScreener CDN and token-hosted images). Images
+  // cannot execute script; everything active stays same-origin.
+  "img-src 'self' data: blob: https:",
   "font-src 'self'",
   "connect-src 'self'",
   "frame-ancestors 'none'",
