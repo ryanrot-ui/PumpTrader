@@ -72,12 +72,22 @@ interface FeedEvent {
   message: string;
 }
 
+interface TrendingRow {
+  mint: string;
+  symbol: string | null;
+  priceUsd: number | null;
+  marketCapUsd: number | null;
+  change24hPct: number | null;
+  url: string;
+}
+
 export default function Dashboard() {
   const [mode, setMode] = useState<StatsMode>("all");
   const { data: stats } = usePoll<Stats>(`/api/stats?mode=${mode}`, 10_000);
   const { data: health } = usePoll<Health>("/api/health", 10_000);
   const { data: positions } = usePoll<PositionRow[]>("/api/positions?status=OPEN", 5_000);
   const { data: tokens } = usePoll<TokenRow[]>("/api/tokens?limit=8", 8_000);
+  const { data: trending } = usePoll<TrendingRow[]>("/api/trending", 60_000);
   const feed = useLiveFeed();
 
   return (
@@ -223,6 +233,48 @@ export default function Dashboard() {
             ))}
               {(!tokens || tokens.length === 0) && (
                 <p className="text-sm text-slate-600">Waiting for migrations…</p>
+              )}
+            </div>
+          </div>
+          <div className="card">
+            <div className="stat-label mb-1">Trending on Solana</div>
+            <p className="text-[10px] text-slate-600 mb-2">
+              DexScreener boosted tokens — paid attention, not quality. Informational only; never
+              feeds buy decisions.
+            </p>
+            <div className="space-y-2 max-h-56 overflow-y-auto">
+              {(trending ?? []).map((t) => (
+                <a
+                  key={t.mint}
+                  href={t.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-between gap-2 text-sm hover:bg-surface-overlay/50 rounded px-1 -mx-1"
+                >
+                  <div className="min-w-0 truncate">
+                    <span className="text-slate-200">{t.symbol ?? shortMint(t.mint)}</span>
+                    {t.marketCapUsd != null && (
+                      <span className="text-slate-600 text-xs ml-2">
+                        ${t.marketCapUsd >= 1e6 ? `${(t.marketCapUsd / 1e6).toFixed(1)}M` : `${(t.marketCapUsd / 1e3).toFixed(0)}K`} MC
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 text-xs">
+                    {t.priceUsd != null && (
+                      <span className="font-mono text-slate-400">
+                        ${t.priceUsd < 0.001 ? t.priceUsd.toPrecision(3) : t.priceUsd.toFixed(4)}
+                      </span>
+                    )}
+                    {t.change24hPct != null && (
+                      <span className={t.change24hPct >= 0 ? "text-profit" : "text-loss"}>
+                        {t.change24hPct >= 0 ? "▲" : "▼"} {Math.abs(t.change24hPct).toFixed(1)}%
+                      </span>
+                    )}
+                  </div>
+                </a>
+              ))}
+              {(!trending || trending.length === 0) && (
+                <p className="text-sm text-slate-600">No trending data right now</p>
               )}
             </div>
           </div>
