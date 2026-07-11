@@ -254,6 +254,8 @@ export default function SettingsPage() {
             {saved && <span className="text-profit text-sm">✓ Saved — engine reloading</span>}
             {error && <span className="text-loss text-sm">{error}</span>}
           </div>
+
+          <DangerZone />
         </>
       )}
 
@@ -607,6 +609,52 @@ function WalletPanel() {
       </div>
 
       <ManualTradePanel />
+    </div>
+  );
+}
+
+// ── Danger zone ──────────────────────────────────────────────────────────────
+
+function DangerZone() {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const reset = async () => {
+    if (
+      !window.confirm(
+        "Reset dashboard statistics to zero?\n\nThis permanently deletes all PAPER trades, PAPER positions, and the daily counters (PnL, win rate, scanned/bought/rejected).\n\nLive trades, detected tokens, settings, and wallets are NOT touched."
+      )
+    )
+      return;
+    setBusy(true);
+    setMsg(null);
+    const res = await fetch("/api/reset", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    }).catch(() => null);
+    const body = await res?.json().catch(() => ({}));
+    if (res?.ok) {
+      const d = (body as { deleted?: { paperTrades: number; paperPositions: number } }).deleted;
+      setMsg(`✓ Reset complete — deleted ${d?.paperTrades ?? 0} paper trades and ${d?.paperPositions ?? 0} paper positions. The dashboard is back to zero.`);
+    } else {
+      setMsg((body as { error?: string })?.error ?? "Reset failed — try again");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card mt-4 max-w-xl border-loss/30">
+      <div className="stat-label mb-1 text-loss">Danger zone</div>
+      <p className="text-[11px] text-slate-600 mb-2">
+        Start fresh after changing strategy: wipes paper-trading history and the dashboard
+        counters so the stats reflect only the current configuration. Live trade records are
+        never deleted.
+      </p>
+      <button onClick={reset} disabled={busy} className="btn-ghost text-sm !border-loss/40 !text-loss disabled:opacity-50">
+        {busy ? "Resetting…" : "Reset dashboard statistics"}
+      </button>
+      {msg && <p className="text-xs mt-2 text-slate-400">{msg}</p>}
     </div>
   );
 }

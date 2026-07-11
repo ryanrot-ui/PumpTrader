@@ -345,6 +345,8 @@ class TradingEngine {
 
   /** Throttled reminder that explains a persistently empty token list. */
   private lastEmptyReasonLogAt = 0;
+  /** Throttle for the database-unreachable warning (one line per minute). */
+  private lastDbDownLogAt = 0;
   private async logIfNoDetections(): Promise<void> {
     if (this.scanner.totalDetected > 0) return;
     if (Date.now() - this.lastEmptyReasonLogAt < 10 * 60_000) return;
@@ -561,6 +563,21 @@ class TradingEngine {
       await this.tryBuy(t, metrics.priceUsd, metrics.symbol, score.total, score.explanation, decision.reasons, narrativeReport);
     } catch (e) {
       const err = e as Error & { code?: string; meta?: unknown };
+      // Database unreachable (P1001/P1002): this is an infrastructure
+      // outage, not a scoring bug — every token would "fail" identically.
+      // One throttled warning explains it; evaluations resume automatically
+      // when the database is back (nothing trades blind in the meantime).
+      if (err.code === "P1001" || err.code === "P1002") {
+        if (Date.now() - this.lastDbDownLogAt > 60_000) {
+          this.lastDbDownLogAt = Date.now();
+          logger.warn(
+            "engine",
+            "database unreachable (P1001) — evaluations paused this cycle and resume automatically when it is back. " +
+              "Recurring blips usually mean a free-tier Neon compute suspending; a Render PostgreSQL in the same account eliminates this."
+          );
+        }
+        return;
+      }
       // The token row vanished mid-evaluation (P2025 record-not-found /
       // P2003 broken relation): stop evaluating a ghost instead of failing
       // every cycle. Other tokens are unaffected either way — evaluations
