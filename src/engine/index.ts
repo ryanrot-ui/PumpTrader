@@ -289,6 +289,7 @@ class TradingEngine {
         usingPublicRpc: isPublicRpc(rpcUrl),
         tokensDetected,
         scannerError: this.scanner.lastPollError,
+        settingsLoadedAt: this.config.loadedSettingsUpdatedAtMs,
       },
     }).catch(() => {});
 
@@ -559,7 +560,29 @@ class TradingEngine {
       }
       await this.tryBuy(t, metrics.priceUsd, metrics.symbol, score.total, score.explanation, decision.reasons, narrativeReport);
     } catch (e) {
-      logger.exception("scoring", `evaluate ${t.mint.slice(0, 8)}… failed`, e);
+      const err = e as Error & { code?: string; meta?: unknown };
+      // The token row vanished mid-evaluation (P2025 record-not-found /
+      // P2003 broken relation): stop evaluating a ghost instead of failing
+      // every cycle. Other tokens are unaffected either way — evaluations
+      // run isolated per token.
+      if (err.code === "P2025" || err.code === "P2003") {
+        this.watchlist.delete(t.mint);
+        forgetToken(t.mint);
+        logger.warn(
+          "scoring",
+          `token row for ${t.mint} disappeared mid-evaluation (${err.code}) — dropped from watchlist`
+        );
+        return;
+      }
+      // Complete diagnostics, never a truncated mystery: full message,
+      // Prisma error code + meta, the token, and the operation context.
+      logger.exception("scoring", `evaluate ${t.mint} failed`, e, {
+        mint: t.mint,
+        tokenId: t.tokenId,
+        prismaCode: err.code ?? null,
+        prismaMeta: err.meta ? JSON.parse(JSON.stringify(err.meta)) : null,
+        operation: "score/persist/decide cycle (scoreRecord.create + tokenSnapshot.create + detectedToken.update)",
+      });
     } finally {
       t.evaluating = false;
     }

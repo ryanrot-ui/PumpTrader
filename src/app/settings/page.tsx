@@ -10,6 +10,7 @@ import { WALLET_ERROR_EVENT } from "@/components/wallet/WalletProviders";
 import { TradingModeToggle } from "@/components/TradingModeToggle";
 import { usePoll } from "@/components/usePoll";
 import { shortMint, timeAgo } from "@/components/ui";
+import { SCALPING_PRESET, detectPreset } from "@/lib/presets";
 
 type SettingsForm = Record<string, unknown>;
 
@@ -105,6 +106,7 @@ export default function SettingsPage() {
   const [form, setForm] = useState<SettingsForm | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [presetState, setPresetState] = useState<"idle" | "applying" | "done">("idle");
 
   useEffect(() => {
     fetch("/api/settings")
@@ -212,32 +214,43 @@ export default function SettingsPage() {
               Save settings
             </button>
             <button
-              onClick={() =>
-                setForm((f) =>
-                  f
-                    ? {
-                        ...f,
-                        // Momentum-scalping preset: quick confirmed entries,
-                        // aggressive profit-taking, immediate loss cuts.
-                        confidenceThreshold: 70,
-                        takeProfitPct: 12,
-                        stopLossPct: 6,
-                        trailingStopPct: 5,
-                        maxHoldMinutes: 10,
-                        sellPortionPct: 100,
-                        exitMinBuySellRatio: 0.75,
-                        exitVolumeFadePct: 65,
-                        exitLiquidityDropPct: 25,
-                        scoringWeights: null, // momentum-weighted defaults
-                      }
-                    : f
-                )
-              }
-              className="btn-ghost px-4 py-2 text-sm"
-              title="Fills the form with the momentum-scalping strategy: TP +12%, SL -6%, 5% trail, 10-min max hold, exit on buy-pressure/volume fade, momentum-weighted scoring. Review, then Save."
+              disabled={presetState === "applying"}
+              onClick={async () => {
+                if (!form) return;
+                setError(null);
+                setPresetState("applying");
+                // Apply AND save in one action: the form updates immediately
+                // and the same values are persisted, so the click always has
+                // a visible, confirmed effect.
+                const next = { ...form, ...SCALPING_PRESET };
+                setForm(next);
+                const res = await fetch("/api/settings", {
+                  method: "PUT",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify(next),
+                }).catch(() => null);
+                if (!res?.ok) {
+                  const body = await res?.json().catch(() => ({}));
+                  setError((body as { error?: string })?.error ?? "Failed to save the preset — check the connection and try again");
+                  setPresetState("idle");
+                  return;
+                }
+                setPresetState("done");
+                setTimeout(() => setPresetState("idle"), 5000);
+              }}
+              className="btn-ghost px-4 py-2 text-sm disabled:opacity-50"
+              title="Applies AND saves the momentum-scalping strategy: TP +12%, SL -6%, 5% trail, 10-min max hold, exit on buy-pressure/volume fade, momentum-weighted scoring."
             >
-              Apply scalping preset
+              {presetState === "applying" ? "Applying preset…" : "Apply scalping preset"}
             </button>
+            {presetState === "done" && (
+              <span className="text-profit text-sm">✓ Scalping preset saved — engine reloading</span>
+            )}
+            {detectPreset(form as Record<string, unknown>) === "momentum-scalping" && presetState === "idle" && (
+              <span className="text-xs px-2 py-0.5 rounded bg-profit/10 text-profit">
+                Scalping preset active
+              </span>
+            )}
             {saved && <span className="text-profit text-sm">✓ Saved — engine reloading</span>}
             {error && <span className="text-loss text-sm">{error}</span>}
           </div>

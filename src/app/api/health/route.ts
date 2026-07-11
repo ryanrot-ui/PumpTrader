@@ -14,7 +14,7 @@ export async function GET() {
   if (!uid) return unauthorized();
 
   let state: Awaited<ReturnType<typeof getEngineState>>;
-  let lastErrorEntry: { at: Date; source: string; message: string } | null;
+  let lastErrorEntry: { at: Date; source: string; message: string; meta: unknown } | null;
   try {
     [state, lastErrorEntry] = await Promise.all([
       getEngineState(),
@@ -23,7 +23,9 @@ export async function GET() {
       prisma.logEntry.findFirst({
         where: { level: "error", at: { gte: new Date(Date.now() - 86_400_000) } },
         orderBy: { at: "desc" },
-        select: { at: true, source: true, message: true },
+        // meta carries the stack trace and structured context (token, prisma
+        // code, operation) recorded by logger.exception — full visibility.
+        select: { at: true, source: true, message: true, meta: true },
       }),
     ]);
   } catch (e) {
@@ -91,7 +93,12 @@ export async function GET() {
     tokensDetected: health.tokensDetected ?? null,
     scannerError: health.scannerError ?? null,
     lastError: lastErrorEntry
-      ? { at: lastErrorEntry.at.getTime(), source: lastErrorEntry.source, message: lastErrorEntry.message }
+      ? {
+          at: lastErrorEntry.at.getTime(),
+          source: lastErrorEntry.source,
+          message: lastErrorEntry.message,
+          meta: lastErrorEntry.meta ?? null,
+        }
       : null,
   });
 }

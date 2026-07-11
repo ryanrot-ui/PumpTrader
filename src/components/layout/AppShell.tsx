@@ -13,6 +13,7 @@ const NAV = [
   { href: "/intelligence", label: "Intelligence", icon: "◈" },
   { href: "/positions", label: "Positions", icon: "⇅" },
   { href: "/logs", label: "Logs", icon: "≡" },
+  { href: "/diagnostics", label: "Diagnostics", icon: "✚" },
   { href: "/settings", label: "Settings", icon: "⚙" },
 ];
 

@@ -65,6 +65,11 @@ export class LiveConfig {
     return this.current;
   }
 
+  /** updatedAt of the settings row currently loaded (diagnostics). */
+  get loadedSettingsUpdatedAtMs(): number | null {
+    return this.lastUpdatedAt;
+  }
+
   async start(): Promise<void> {
     await this.reload();
     // Fast path: instant reload when Redis is configured (no-op otherwise).

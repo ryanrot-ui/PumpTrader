@@ -38,6 +38,8 @@ export interface EngineHealth {
   tokensDetected?: number;
   /** last scanner poll error (rate limit / unreachable), if any. */
   scannerError?: string | null;
+  /** updatedAt (epoch ms) of the settings row the engine currently runs on. */
+  settingsLoadedAt?: number | null;
 }
 
 export async function getEngineState() {

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { timeAgo } from "@/components/ui";
 
 /**
@@ -29,7 +30,74 @@ export interface Health {
   scannerError?: string | null;
   lastTradeAt: number | null;
   memoryRssMb: number | null;
-  lastError: { at: number; source: string; message: string } | null;
+  lastError: {
+    at: number;
+    source: string;
+    message: string;
+    meta?: Record<string, unknown> | null;
+  } | null;
+}
+
+/**
+ * The most recent engine error, in full: complete message, structured
+ * context (token, Prisma code, operation), expandable stack trace, exact
+ * timestamp, and a copy button — never a truncated mystery.
+ */
+function LastErrorPanel({
+  err,
+}: {
+  err: { at: number; source: string; message: string; meta?: Record<string, unknown> | null };
+}) {
+  const [copied, setCopied] = useState(false);
+  const meta = err.meta ?? {};
+  const stack = typeof meta.stack === "string" ? meta.stack : null;
+  const context = Object.entries(meta).filter(([k]) => k !== "stack");
+  const fullText = [
+    `[${new Date(err.at).toISOString()}] [${err.source}] ${err.message}`,
+    ...context.map(([k, v]) => `${k}: ${JSON.stringify(v)}`),
+    ...(stack ? ["", stack] : []),
+  ].join("\n");
+
+  return (
+    <details className="mt-2 text-xs rounded-md border border-loss/30 bg-loss/5 px-3 py-2">
+      <summary className="cursor-pointer text-loss list-none flex items-baseline gap-2 flex-wrap">
+        <span>⚠</span>
+        <span className="text-slate-500 shrink-0">{timeAgo(new Date(err.at))} ago</span>
+        <span className="text-slate-500 shrink-0">[{err.source}]</span>
+        <span className="min-w-0 break-all">{err.message}</span>
+        <span className="text-slate-600 shrink-0">(click for details)</span>
+      </summary>
+      <div className="mt-2 space-y-2">
+        <div className="text-slate-500">{new Date(err.at).toLocaleString()}</div>
+        {context.length > 0 && (
+          <div className="space-y-0.5">
+            {context.map(([k, v]) => (
+              <div key={k} className="font-mono text-slate-400 break-all">
+                <span className="text-slate-600">{k}:</span> {JSON.stringify(v)}
+              </div>
+            ))}
+          </div>
+        )}
+        {stack && (
+          <pre className="font-mono text-[10px] text-slate-500 whitespace-pre-wrap break-all max-h-48 overflow-y-auto bg-surface-overlay/40 rounded p-2">
+            {stack}
+          </pre>
+        )}
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            void navigator.clipboard?.writeText(fullText).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            });
+          }}
+          className="text-slate-400 hover:text-slate-200 border border-surface-border rounded px-2 py-0.5"
+        >
+          {copied ? "✓ Copied" : "Copy full error"}
+        </button>
+      </div>
+    </details>
+  );
 }
 
 function Dot({ ok, warn }: { ok: boolean; warn?: boolean }) {
@@ -169,12 +237,7 @@ export function HealthIndicators({ health }: { health: Health | null | undefined
           same <span className="font-mono">DATABASE_URL</span> as the web service.
         </div>
       )}
-      {health?.lastError && (
-        <div className="mt-2 text-xs text-loss truncate" title={health.lastError.message}>
-          ⚠ <span className="text-slate-500">{timeAgo(new Date(health.lastError.at))} ago</span>{" "}
-          [{health.lastError.source}] {health.lastError.message}
-        </div>
-      )}
+      {health?.lastError && <LastErrorPanel err={health.lastError} />}
     </div>
   );
 }
