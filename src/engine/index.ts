@@ -9,6 +9,7 @@ import { validateEnv, rpcEndpoints } from "@/lib/env";
 import {
   collectMetrics,
   forgetToken,
+  getPairSnapshot,
   getPoolLiquidityUsd,
   getSolPriceUsd,
   getTokenPriceUsd,
@@ -451,11 +452,20 @@ class TradingEngine {
       const weights = settings.scoringWeights ?? DEFAULT_WEIGHTS;
       const score = scoreToken(metrics, weights);
 
+      // Sanitize numerics before persisting: a NaN/Infinity from upstream
+      // arithmetic (e.g. a division on partial API data) must become null,
+      // not an Invalid-invocation crash for the whole evaluation.
+      const fin = (v: number | null): number | null =>
+        v !== null && Number.isFinite(v) ? v : null;
+      const safeTotal = Number.isFinite(score.total)
+        ? Math.round(Math.max(0, Math.min(100, score.total)))
+        : 0;
+
       await prisma.$transaction([
         prisma.scoreRecord.create({
           data: {
             tokenId: t.tokenId,
-            total: score.total,
+            total: safeTotal,
             breakdown: JSON.parse(JSON.stringify(score.metrics)),
             greenFlags: score.greenFlags.map((f) => f.label),
             redFlags: score.redFlags.map((f) => f.label),
@@ -465,19 +475,19 @@ class TradingEngine {
         prisma.tokenSnapshot.create({
           data: {
             tokenId: t.tokenId,
-            priceUsd: metrics.priceUsd,
-            liquiditySol: metrics.liquiditySol,
-            marketCapUsd: metrics.marketCapUsd,
-            volume5mUsd: metrics.volume5mUsd,
+            priceUsd: fin(metrics.priceUsd),
+            liquiditySol: fin(metrics.liquiditySol),
+            marketCapUsd: fin(metrics.marketCapUsd),
+            volume5mUsd: fin(metrics.volume5mUsd),
             holderCount: metrics.holderCount,
-            txPerMinute: metrics.txPerMinute,
-            buySellRatio: metrics.buySellRatio,
+            txPerMinute: fin(metrics.txPerMinute),
+            buySellRatio: fin(metrics.buySellRatio),
           },
         }),
         prisma.detectedToken.update({
           where: { id: t.tokenId },
           data: {
-            score: score.total,
+            score: safeTotal,
             symbol: metrics.symbol ?? undefined,
             name: metrics.name ?? undefined,
             imageUrl: metrics.imageUrl ?? undefined,
@@ -728,8 +738,10 @@ class TradingEngine {
     await Promise.allSettled(
       positions.map(async (p) => {
         if (this.selling.has(p.id)) return;
-        const price = await getTokenPriceUsd(p.mint);
-        if (!price || !p.entryPriceUsd) return; // stale/no price → never act on it
+        // ONE DexScreener call per tick: price + liquidity + 5m momentum.
+        const snap = await getPairSnapshot(p.mint);
+        const price = snap?.priceUsd ?? null;
+        if (!snap || !price || !p.entryPriceUsd) return; // stale/no price → never act on it
 
         // Track peak / best unrealized gain / deepest drawdown for the
         // trailing stop and the analytics on every trade record.
@@ -741,7 +753,7 @@ class TradingEngine {
 
         // liquidity drop since entry → rug signal (baseline stored on the row)
         let liquidityDropPct: number | null = null;
-        const liqNow = await getPoolLiquidityUsd(p.mint);
+        const liqNow = snap.liquidityUsd;
         if (liqNow !== null) {
           if (p.entryLiquidityUsd == null) {
             await prisma.position.update({
@@ -753,12 +765,28 @@ class TradingEngine {
           }
         }
 
+        // 5m-volume baseline at entry → the volume-fade momentum exit
+        let entryVolume5mUsd = p.entryVolume5mUsd;
+        if (snap.volume5mUsd !== null && entryVolume5mUsd == null) {
+          entryVolume5mUsd = snap.volume5mUsd;
+          await prisma.position.update({
+            where: { id: p.id },
+            data: { entryVolume5mUsd },
+          });
+        }
+
         const decision = evaluateExit(settings, {
           entryPriceUsd: p.entryPriceUsd,
           currentPriceUsd: price,
           peakPriceUsd: peak,
           openedAt: p.openedAt,
           liquidityDropPct,
+          buySellRatio5m:
+            snap.buys5m !== null && snap.sells5m !== null
+              ? snap.buys5m / Math.max(snap.sells5m, 1)
+              : null,
+          volume5mUsd: snap.volume5mUsd,
+          entryVolume5mUsd,
         });
         if (decision.exit) {
           if (this.isReadOnly()) {

@@ -51,6 +51,11 @@ export const settingsSchema = z.object({
   maxHoldMinutes: z.number().int().positive().nullable(),
   sellPortionPct: z.number().positive().max(100),
 
+  // Momentum exits (scalping) — null = disabled
+  exitMinBuySellRatio: z.number().min(0).max(10).nullable(),
+  exitVolumeFadePct: z.number().min(1).max(100).nullable(),
+  exitLiquidityDropPct: z.number().min(1).max(100),
+
   // Risk
   maxSolPerTrade: z.number().positive().max(1000),
   maxOpenPositions: z.number().int().min(1).max(50),

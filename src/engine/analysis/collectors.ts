@@ -130,6 +130,38 @@ async function solPriceUsd(): Promise<number> {
   }
 }
 
+/**
+ * Everything the position monitor needs from ONE DexScreener call: price for
+ * PnL, liquidity for the rug signal, and 5m buys/sells/volume for the
+ * momentum exits. Replaces separate price + liquidity fetches.
+ */
+export interface PairSnapshot {
+  priceUsd: number | null;
+  liquidityUsd: number | null;
+  volume5mUsd: number | null;
+  buys5m: number | null;
+  sells5m: number | null;
+}
+
+export async function getPairSnapshot(mint: string): Promise<PairSnapshot | null> {
+  try {
+    const data = await fetchJson<{ pairs: DexPair[] | null }>(
+      `${DEXSCREENER}/latest/dex/tokens/${mint}`
+    );
+    const pair = bestPair(data.pairs);
+    if (!pair) return null;
+    return {
+      priceUsd: pair.priceUsd ? parseFloat(pair.priceUsd) : null,
+      liquidityUsd: pair.liquidity?.usd ?? null,
+      volume5mUsd: pair.volume?.m5 ?? null,
+      buys5m: pair.txns?.m5?.buys ?? null,
+      sells5m: pair.txns?.m5?.sells ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Lightweight price lookup for position monitoring (deepest pool). */
 export async function getTokenPriceUsd(mint: string): Promise<number | null> {
   try {

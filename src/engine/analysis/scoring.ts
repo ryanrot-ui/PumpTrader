@@ -29,20 +29,29 @@ export interface ScoringWeights {
   activity: number; // tx velocity
 }
 
+/**
+ * Momentum-scalping weights: the score measures the best setup RIGHT NOW,
+ * not "the best coin". Live demand signals (buy pressure, momentum, volume
+ * acceleration, holder growth, activity) carry ~68 of 100 points; static
+ * quality (liquidity depth, distribution, wallet quality) provides the
+ * floor; safety weighs less here because outright scam conditions are
+ * enforced by the hard safety gates in trading/rules.ts, not by the score.
+ * All weights remain overridable per-user via settings.scoringWeights.
+ */
 export const DEFAULT_WEIGHTS: ScoringWeights = {
-  liquidity: 10,
-  marketCap: 5,
-  volume: 8,
-  volumeGrowth: 6,
-  buyPressure: 9,
-  holders: 7,
-  holderGrowth: 6,
-  distribution: 12,
-  walletQuality: 9,
-  momentum: 7,
-  stability: 6,
-  safety: 12,
-  activity: 3,
+  liquidity: 8,
+  marketCap: 1,
+  volume: 10,
+  volumeGrowth: 12,
+  buyPressure: 14,
+  holders: 1,
+  holderGrowth: 10,
+  distribution: 8,
+  walletQuality: 6,
+  momentum: 14,
+  stability: 2,
+  safety: 6,
+  activity: 8,
 };
 
 // ── helpers ─────────────────────────────────────────────────────────────────

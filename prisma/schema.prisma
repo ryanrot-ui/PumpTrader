@@ -66,12 +66,18 @@ model Settings {
   maxDevPct           Float  @default(10) // max developer holding %
   maxSlippageBps      Int    @default(300)
 
-  // Selling
-  takeProfitPct   Float   @default(100) // default: cash out at +100%
-  stopLossPct     Float   @default(30)
-  trailingStopPct Float?  // null = disabled
-  maxHoldMinutes  Int?    // null = disabled
+  // Selling — scalping defaults: take small profits fast, cut losers faster
+  takeProfitPct   Float   @default(12) // quick scalp target
+  stopLossPct     Float   @default(6) // tight loss cut
+  trailingStopPct Float?  @default(5) // lock gains once in profit
+  maxHoldMinutes  Int?    @default(10) // never marry a position
   sellPortionPct  Float   @default(100) // % of position sold at TP
+
+  // Momentum exits (scalping): leave when the setup dies, before the dump.
+  // null = disabled.
+  exitMinBuySellRatio  Float? @default(0.75) // exit when 5m buys/sells falls below
+  exitVolumeFadePct    Float? @default(65) // exit when 5m volume fades ≥ this % vs entry
+  exitLiquidityDropPct Float  @default(25) // emergency exit when liquidity drains ≥ this %
 
   // Risk
   maxSolPerTrade    Float @default(0.25)
@@ -280,6 +286,8 @@ model Position {
   maxDrawdownPct      Float?
   // Pool liquidity at entry — baseline for the liquidity-drop rug signal.
   entryLiquidityUsd   Float?
+  // 5m volume at entry — baseline for the volume-fade momentum exit.
+  entryVolume5mUsd    Float?
   // Snapshot of every signal present at entry (scores + raw social/on-chain
   // readings) — compared against the outcome by the learning analytics.
   entrySignals Json?

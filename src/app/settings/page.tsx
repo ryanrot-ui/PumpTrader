@@ -36,11 +36,33 @@ const SECTIONS: Array<{
   {
     title: "Selling",
     fields: [
-      { key: "takeProfitPct", label: "Take profit (%)", hint: "default 100 = cash out at 2×" },
-      { key: "stopLossPct", label: "Stop loss (%)" },
-      { key: "trailingStopPct", label: "Trailing stop (%)", nullable: true, hint: "empty = disabled" },
-      { key: "maxHoldMinutes", label: "Time-based exit (minutes)", nullable: true, hint: "empty = disabled" },
+      { key: "takeProfitPct", label: "Take profit (%)", hint: "scalping default 12 — small wins, taken often" },
+      { key: "stopLossPct", label: "Stop loss (%)", hint: "scalping default 6 — cut losers immediately" },
+      { key: "trailingStopPct", label: "Trailing stop (%)", nullable: true, hint: "locks gains once in profit; empty = disabled" },
+      { key: "maxHoldMinutes", label: "Time-based exit (minutes)", nullable: true, hint: "scalping default 10; empty = disabled" },
       { key: "sellPortionPct", label: "Sell portion at TP (%)" },
+    ],
+  },
+  {
+    title: "Momentum exits (scalping)",
+    fields: [
+      {
+        key: "exitMinBuySellRatio",
+        label: "Exit when 5m buy/sell ratio falls below",
+        nullable: true,
+        hint: "buy pressure faded → leave before the dump; empty = disabled",
+      },
+      {
+        key: "exitVolumeFadePct",
+        label: "Exit when 5m volume fades by (%)",
+        nullable: true,
+        hint: "vs volume at entry; empty = disabled",
+      },
+      {
+        key: "exitLiquidityDropPct",
+        label: "Emergency exit on liquidity drop (%)",
+        hint: "rug protection — exits everything when the pool drains this much",
+      },
     ],
   },
   {
@@ -185,9 +207,36 @@ export default function SettingsPage() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3 mt-4">
+          <div className="flex items-center gap-3 mt-4 flex-wrap">
             <button onClick={save} className="btn-primary px-6 py-2">
               Save settings
+            </button>
+            <button
+              onClick={() =>
+                setForm((f) =>
+                  f
+                    ? {
+                        ...f,
+                        // Momentum-scalping preset: quick confirmed entries,
+                        // aggressive profit-taking, immediate loss cuts.
+                        confidenceThreshold: 70,
+                        takeProfitPct: 12,
+                        stopLossPct: 6,
+                        trailingStopPct: 5,
+                        maxHoldMinutes: 10,
+                        sellPortionPct: 100,
+                        exitMinBuySellRatio: 0.75,
+                        exitVolumeFadePct: 65,
+                        exitLiquidityDropPct: 25,
+                        scoringWeights: null, // momentum-weighted defaults
+                      }
+                    : f
+                )
+              }
+              className="btn-ghost px-4 py-2 text-sm"
+              title="Fills the form with the momentum-scalping strategy: TP +12%, SL -6%, 5% trail, 10-min max hold, exit on buy-pressure/volume fade, momentum-weighted scoring. Review, then Save."
+            >
+              Apply scalping preset
             </button>
             {saved && <span className="text-profit text-sm">✓ Saved — engine reloading</span>}
             {error && <span className="text-loss text-sm">{error}</span>}
