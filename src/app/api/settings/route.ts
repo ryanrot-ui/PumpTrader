@@ -4,8 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { publish, CHANNELS } from "@/lib/redis";
 import { settingsUpdateSchema } from "@/lib/validation";
 import { requireUser, unauthorized } from "@/lib/session";
+import { dbGuard } from "@/lib/dbGuard";
 
-export async function GET() {
+async function handleGet() {
   const user = await requireUser();
   if (!user) return unauthorized();
 
@@ -15,7 +16,7 @@ export async function GET() {
   return NextResponse.json(values);
 }
 
-export async function PUT(req: Request) {
+async function handlePut(req: Request) {
   const user = await requireUser();
   if (!user) return unauthorized();
 
@@ -65,3 +66,6 @@ export async function PUT(req: Request) {
   publish(CHANNELS.settingsUpdated, "updated");
   return NextResponse.json({ ok: true });
 }
+
+export const GET = dbGuard(handleGet);
+export const PUT = dbGuard(handlePut);

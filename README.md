@@ -75,6 +75,39 @@ One-click Blueprint deployment (web + engine worker, Neon PostgreSQL, automatic
 schema initialization, no manual database steps):
 see [`docs/DEPLOY-RENDER.md`](docs/DEPLOY-RENDER.md).
 
+### Running reliably on Neon Free
+
+Neon's free tier suspends the database compute after inactivity and drops
+pooled connections when it does; the platform is built to ride that out
+instead of spamming logs or crashing:
+
+- **Connection strings.** `DATABASE_URL` must be Neon's **pooled** endpoint
+  (hostname contains `-pooler`) — that's what both services query at runtime.
+  Schema application needs the **direct** endpoint; the containers derive it
+  automatically by stripping `-pooler`, so set `DIRECT_URL` only if your hosts
+  differ by more than that. A wrong pairing is called out with a
+  `[database] configuration warning:` line at boot.
+- **Wake-friendly timeouts.** The Prisma datasource URL automatically gets
+  `connect_timeout=15` and `pool_timeout=15` (your own URL params always win),
+  so the very query that wakes a suspended compute doesn't time out at
+  Prisma's 5s default and masquerade as an outage. Optional:
+  `DB_CONNECTION_LIMIT=<n>` caps the pool size per process.
+- **One client per process.** The web app and the engine each hold a single
+  shared `PrismaClient`; nothing else opens connections.
+- **Circuit breaker + offline queue (engine).** The first transient failure
+  marks the database offline; scanning and scoring continue with writes
+  captured in a bounded in-memory queue, probes retry on exponential backoff
+  (5s → 60s cap, forever), and the first success flushes the queue in order
+  with original timestamps. Status is one throttled log line per minute, not
+  hundreds of Prisma stack traces — and the same applies to a database that
+  is down when the engine boots (it starts scanning and recovers later).
+- **Quiet web app.** Identical Prisma connectivity errors are collapsed to one
+  line per minute with a repeat count, and the polled dashboard APIs answer
+  `503 database temporarily unavailable` instead of a stack-traced 500.
+- **Live visibility.** `/diagnostics` shows database status, last successful /
+  failed query, retry countdown, queued writes, connection latency, Prisma
+  version, and engine state.
+
 Create the **administrator account** at `http://localhost:3000/register` (works
 exactly once — registration is permanently disabled after the admin exists;
 this is a single-operator system). Locked out or the account was created during

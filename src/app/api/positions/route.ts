@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireUser, unauthorized } from "@/lib/session";
+import { dbGuard } from "@/lib/dbGuard";
 
-export async function GET(req: Request) {
+async function handleGet(req: Request) {
   const user = await requireUser();
   if (!user) return unauthorized();
 
@@ -17,3 +18,5 @@ export async function GET(req: Request) {
   });
   return NextResponse.json(positions);
 }
+
+export const GET = dbGuard(handleGet);

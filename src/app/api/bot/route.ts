@@ -5,8 +5,9 @@ import { publish, CHANNELS } from "@/lib/redis";
 import { engineAlive, getEngineState, requestEngineControl, updateEngineState } from "@/lib/engineState";
 import { requireUser, unauthorized } from "@/lib/session";
 import { rateLimit } from "@/lib/rateLimit";
+import { dbGuard } from "@/lib/dbGuard";
 
-export async function GET() {
+async function handleGet() {
   const user = await requireUser();
   if (!user) return unauthorized();
 
@@ -38,7 +39,7 @@ const actionSchema = z.discriminatedUnion("action", [
   }),
 ]);
 
-export async function POST(req: Request) {
+async function handlePost(req: Request) {
   const user = await requireUser();
   if (!user) return unauthorized();
   if (!(await rateLimit(`bot:${user.id}`, 30, 60))) {
@@ -108,3 +109,6 @@ export async function POST(req: Request) {
     .catch(() => {});
   return NextResponse.json({ ok: true });
 }
+
+export const GET = dbGuard(handleGet);
+export const POST = dbGuard(handlePost);

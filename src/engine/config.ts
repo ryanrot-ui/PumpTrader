@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { subscribe, CHANNELS } from "@/lib/redis";
 import { settingsSchema, type BotSettings } from "@/lib/validation";
+import { dbResilience, isTransientDbError } from "./db/resilience";
 import { logger } from "./logging/logger";
 
 /**
@@ -71,7 +72,19 @@ export class LiveConfig {
   }
 
   async start(): Promise<void> {
-    await this.reload();
+    // The engine must boot even when the database is briefly down (Neon Free
+    // suspends between uses): run on defaults, open the circuit, and let the
+    // poll below load the real settings the moment the database answers.
+    try {
+      await this.reload();
+    } catch (e) {
+      if (!isTransientDbError(e)) throw e;
+      dbResilience.recordFailure(e);
+      logger.warn(
+        "engine",
+        "database unreachable at startup — running on default settings until it comes back (they reload automatically)"
+      );
+    }
     // Fast path: instant reload when Redis is configured (no-op otherwise).
     this.unsubscribe = subscribe(CHANNELS.settingsUpdated, () => void this.safeReload());
     // Always-on fallback: cheap updatedAt check every few seconds.
@@ -84,6 +97,10 @@ export class LiveConfig {
   }
 
   private async pollForChanges(): Promise<void> {
+    // Circuit open → don't add a failing query every 5s on top of the state
+    // tick's probe. The first healthy tick closes the circuit; the next poll
+    // then picks up any settings changed during the outage.
+    if (!dbResilience.healthy) return;
     try {
       const row = await prisma.settings.findFirst({
         orderBy: { updatedAt: "desc" },
@@ -91,8 +108,10 @@ export class LiveConfig {
       });
       const stamp = row?.updatedAt.getTime() ?? null;
       if (stamp !== this.lastUpdatedAt) await this.reload();
-    } catch {
-      /* DB hiccup — next poll retries; the engine keeps its current settings */
+    } catch (e) {
+      // Transient failure opens the circuit immediately (instead of waiting
+      // for the state tick to notice); anything else retries next poll.
+      if (isTransientDbError(e)) dbResilience.recordFailure(e);
     }
   }
 

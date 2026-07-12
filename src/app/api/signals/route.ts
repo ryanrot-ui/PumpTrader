@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireUser, unauthorized } from "@/lib/session";
+import { dbGuard } from "@/lib/dbGuard";
 
 /**
  * Signal-performance learning analytics: compares the signals captured at
@@ -52,7 +53,7 @@ const BUCKETS: BucketDef[] = [
   { signal: "Telegram community", bucket: "< 500 / unknown", match: (s) => (s.telegramMembers ?? 0) < 500 },
 ];
 
-export async function GET(req: Request) {
+async function handleGet(req: Request) {
   const user = await requireUser();
   if (!user) return unauthorized();
 
@@ -92,3 +93,5 @@ export async function GET(req: Request) {
     rows,
   });
 }
+
+export const GET = dbGuard(handleGet);

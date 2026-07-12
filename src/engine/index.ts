@@ -143,28 +143,31 @@ class TradingEngine {
         });
       }
     };
+    // If the initial crash recovery below couldn't run because the database
+    // was down at boot, run it as soon as the circuit closes again.
+    dbResilience.onReconnected = () => {
+      if (!this.bootRecoveryDone) {
+        void this.recoverStateFromDb().catch((e) =>
+          logger.warn("engine", `deferred crash recovery failed: ${(e as Error).message}`)
+        );
+      }
+    };
     await this.config.start();
 
-    // Crash recovery: resume open positions and recent unresolved tokens
-    const openPositions = await prisma.position.count({ where: { status: "OPEN" } });
-    const recent = await prisma.detectedToken.findMany({
-      where: {
-        detectedAt: { gte: new Date(Date.now() - WATCH_WINDOW_MS) },
-        // Resume anything not already resolved. NOTE: SQL `NOT IN` excludes
-        // NULLs, so a token detected-but-not-yet-evaluated before a crash
-        // (verdict null) must be matched explicitly or it would be lost.
-        OR: [{ verdict: null }, { verdict: { notIn: ["BOUGHT", "IGNORED"] } }],
-      },
-    });
-    for (const t of recent) {
-      this.watchlist.set(t.mint, {
-        tokenId: t.id,
-        mint: t.mint,
-        migratedAt: t.migratedAt,
-        evaluating: false,
-      });
+    // Crash recovery: resume open positions and recent unresolved tokens.
+    // A database that is down AT BOOT must not crash-loop the worker: mark
+    // the circuit open, start scanning anyway (detections queue in memory),
+    // and recover the moment the database answers a probe.
+    try {
+      await this.recoverStateFromDb();
+    } catch (e) {
+      if (!isTransientDbError(e)) throw e;
+      dbResilience.recordFailure(e);
+      logger.warn(
+        "engine",
+        "database unreachable at startup — scanning starts anyway; watchlist & positions will be recovered when it comes back"
+      );
     }
-    logger.info("engine", `recovered ${openPositions} open position(s), ${recent.length} watched token(s)`);
 
     await this.scanner.start();
     // Loud, one-time self-test so an empty token list always has a logged
@@ -182,6 +185,36 @@ class TradingEngine {
     this.timers.push(setInterval(() => void this.stateTick(), 5_000));
     await this.stateTick();
     logger.info("engine", "engine running — scanning for Pump.fun migrations");
+  }
+
+  /**
+   * Rebuild in-memory state from Postgres (idempotent — safe to re-run after
+   * an outage): open-position count for the log line, and every recent
+   * unresolved token back onto the watchlist.
+   */
+  private bootRecoveryDone = false;
+  private async recoverStateFromDb(): Promise<void> {
+    const openPositions = await prisma.position.count({ where: { status: "OPEN" } });
+    const recent = await prisma.detectedToken.findMany({
+      where: {
+        detectedAt: { gte: new Date(Date.now() - WATCH_WINDOW_MS) },
+        // Resume anything not already resolved. NOTE: SQL `NOT IN` excludes
+        // NULLs, so a token detected-but-not-yet-evaluated before a crash
+        // (verdict null) must be matched explicitly or it would be lost.
+        OR: [{ verdict: null }, { verdict: { notIn: ["BOUGHT", "IGNORED"] } }],
+      },
+    });
+    for (const t of recent) {
+      if (this.watchlist.has(t.mint)) continue; // don't clobber an in-flight evaluation
+      this.watchlist.set(t.mint, {
+        tokenId: t.id,
+        mint: t.mint,
+        migratedAt: t.migratedAt,
+        evaluating: false,
+      });
+    }
+    this.bootRecoveryDone = true;
+    logger.info("engine", `recovered ${openPositions} open position(s), ${recent.length} watched token(s)`);
   }
 
   async stop(): Promise<void> {
@@ -1106,7 +1139,11 @@ class TradingEngine {
   }
 
   private async emergencyExitAll(): Promise<void> {
-    const positions = await prisma.position.findMany({ where: { status: "OPEN" } });
+    const positions = await prisma.position.findMany({ where: { status: "OPEN" } }).catch((e) => {
+      if (isTransientDbError(e)) dbResilience.recordFailure(e);
+      logger.exception("engine", "emergency exit could not list open positions (will need re-triggering)", e);
+      return [] as Awaited<ReturnType<typeof prisma.position.findMany>>;
+    });
     for (const p of positions) {
       const price = (await getTokenPriceUsd(p.mint)) ?? p.entryPriceUsd ?? 0;
       await this.closePosition(p.id, price, 100, "rug_exit", "emergency stop — operator initiated");
@@ -1117,6 +1154,9 @@ class TradingEngine {
 
   /** Archive old scanner data so the DB and dashboard stay fast. */
   private async archiveOldData(): Promise<void> {
+    // Housekeeping can always wait for the next 6h tick — never probe a
+    // database the circuit already knows is down.
+    if (!dbResilience.healthy) return;
     const cutoff = new Date(Date.now() - ARCHIVE_AFTER_DAYS * 86_400_000);
     try {
       const snapshots = await prisma.tokenSnapshot.deleteMany({ where: { at: { lt: cutoff } } });
@@ -1140,7 +1180,8 @@ class TradingEngine {
         );
       }
     } catch (e) {
-      logger.exception("engine", "archival failed", e);
+      if (isTransientDbError(e)) dbResilience.recordFailure(e);
+      else logger.exception("engine", "archival failed", e);
     }
   }
 
@@ -1201,7 +1242,10 @@ class TradingEngine {
         losses: { increment: delta.losses ?? 0 },
         realizedSol: { increment: delta.realizedSol ?? 0 },
       },
-    }).catch((e) => logger.warn("engine", `daily stats update failed: ${(e as Error).message}`));
+    }).catch((e) => {
+      if (isTransientDbError(e)) dbResilience.recordFailure(e);
+      else logger.warn("engine", `daily stats update failed: ${(e as Error).message}`);
+    });
   }
 }
 

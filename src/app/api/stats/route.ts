@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireUser, unauthorized } from "@/lib/session";
+import { dbGuard } from "@/lib/dbGuard";
 
 const DAY_MS = 86_400_000;
 
@@ -11,7 +12,7 @@ const DAY_MS = 86_400_000;
  * aggregates are computed from closed positions (the financial record);
  * scanner counters (scanned/bought/rejected) come from DailyStats.
  */
-export async function GET(req: Request) {
+async function handleGet(req: Request) {
   const user = await requireUser();
   if (!user) return unauthorized();
 
@@ -96,3 +97,5 @@ export async function GET(req: Request) {
     today: today ?? null,
   });
 }
+
+export const GET = dbGuard(handleGet);
