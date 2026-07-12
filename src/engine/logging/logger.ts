@@ -21,9 +21,13 @@ export function log(
   else if (level === "warn") console.warn(line, meta ?? "");
   else console.log(line, meta ?? "");
 
-  void prisma.logEntry
-    .create({ data: { level, source, message, meta: meta ? JSON.parse(JSON.stringify(meta)) : undefined } })
-    .catch(() => {});
+  // debug stays console-only: persisting per-token debug chatter is the
+  // single biggest source of avoidable write volume on a free-tier database.
+  if (level !== "debug") {
+    void prisma.logEntry
+      .create({ data: { level, source, message, meta: meta ? JSON.parse(JSON.stringify(meta)) : undefined } })
+      .catch(() => {});
+  }
 
   publish(CHANNELS.liveFeed, JSON.stringify({ at: Date.now(), level, source, message, meta }));
 }

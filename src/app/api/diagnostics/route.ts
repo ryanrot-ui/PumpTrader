@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma as PrismaRuntime } from "@prisma/client";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -83,6 +84,16 @@ export async function GET() {
       lastScanAt: health.lastScanAt ?? null,
       tokensDetected: health.tokensDetected ?? null,
       settingsLoadedAt: health.settingsLoadedAt ?? null,
+      // engine-side database circuit breaker (Neon resilience)
+      dbCircuit: {
+        status: health.dbStatus ?? null,
+        consecutiveFailures: health.dbConsecutiveFailures ?? null,
+        lastSuccessAt: health.dbLastSuccessAt ?? null,
+        lastFailureAt: health.dbLastFailureAt ?? null,
+        lastFailureReason: health.dbLastFailureReason ?? null,
+        nextRetryInMs: health.dbNextRetryInMs ?? null,
+        queuedWrites: health.dbQueuedWrites ?? null,
+      },
     },
     settings: settingsRow
       ? {
@@ -129,5 +140,6 @@ function buildVersion() {
     // Render injects the deployed commit; null when running elsewhere.
     commit: process.env.RENDER_GIT_COMMIT ?? null,
     node: process.version,
+    prisma: PrismaRuntime.prismaVersion.client,
   };
 }

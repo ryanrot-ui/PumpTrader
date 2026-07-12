@@ -40,6 +40,14 @@ export interface EngineHealth {
   scannerError?: string | null;
   /** updatedAt (epoch ms) of the settings row the engine currently runs on. */
   settingsLoadedAt?: number | null;
+  // ── database circuit breaker (engine-side Neon resilience) ───────────────
+  dbStatus?: "up" | "down";
+  dbConsecutiveFailures?: number;
+  dbLastSuccessAt?: number | null;
+  dbLastFailureAt?: number | null;
+  dbLastFailureReason?: string | null;
+  dbNextRetryInMs?: number | null;
+  dbQueuedWrites?: number;
 }
 
 export async function getEngineState() {
