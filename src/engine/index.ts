@@ -16,6 +16,7 @@ import {
 } from "./analysis/collectors";
 import { scoreToken, DEFAULT_WEIGHTS } from "./analysis/scoring";
 import { MigrationScanner, type MigrationEvent } from "./scanner/migrationScanner";
+import { dbResilience, isTransientDbError } from "./db/resilience";
 import { evaluateBuyRules } from "./trading/rules";
 import { checkRisk } from "./trading/riskManager";
 import { evaluateExit } from "./trading/exitRules";
@@ -130,6 +131,18 @@ class TradingEngine {
 
   async start(): Promise<void> {
     logger.info("engine", `starting trading engine (rpc: ${this.rpcUrls[0]}, ${this.rpcUrls.length} endpoint(s))`);
+    // Detections queued during a database outage re-enter the watchlist as
+    // soon as the flush lands them, so nothing detected offline is lost.
+    dbResilience.onDetectionFlushed = (tokenId, d) => {
+      if (!this.watchlist.has(d.mint)) {
+        this.watchlist.set(d.mint, {
+          tokenId,
+          mint: d.mint,
+          migratedAt: d.migratedAt,
+          evaluating: false,
+        });
+      }
+    };
     await this.config.start();
 
     // Crash recovery: resume open positions and recent unresolved tokens
@@ -188,6 +201,10 @@ class TradingEngine {
    * flag. Failures are swallowed — the next tick retries.
    */
   private async stateTick(): Promise<void> {
+    // While the database circuit is open, this 5s tick doubles as the probe:
+    // wait out the backoff, then attempt one cheap query. The first success
+    // closes the circuit and flushes everything queued offline.
+    if (!dbResilience.healthy && !dbResilience.probeDue()) return;
     try {
       const state = await prisma.engineState.upsert({
         where: { id: ENGINE_STATE_ID },
@@ -197,6 +214,7 @@ class TradingEngine {
         },
         create: { id: ENGINE_STATE_ID, heartbeatAt: new Date(), status: "running" },
       });
+      await dbResilience.recordSuccess();
       this.readOnly = state.readOnly;
       if (state.controlRequest) {
         await prisma.engineState.update({
@@ -206,7 +224,11 @@ class TradingEngine {
         await this.onControl(state.controlRequest);
       }
     } catch (e) {
-      logger.warn("engine", `state tick failed: ${(e as Error).message}`);
+      if (isTransientDbError(e)) {
+        dbResilience.recordFailure(e); // one structured status line, throttled
+      } else {
+        logger.warn("engine", `state tick failed: ${(e as Error).message}`);
+      }
     }
   }
 
@@ -247,6 +269,9 @@ class TradingEngine {
   // ── RPC health & failover ─────────────────────────────────────────────────
 
   private async publishHealth(): Promise<void> {
+    // Health is written to the database — skip while the circuit is open
+    // (the RPC probe/rotation still matters, so only the write is gated).
+    const dbUp = dbResilience.healthy;
     let rpcLatencyMs: number | null = null;
     const t0 = Date.now();
     try {
@@ -263,6 +288,7 @@ class TradingEngine {
 
     const cutoff = Date.now() - 60_000;
     this.scanTimestamps = this.scanTimestamps.filter((t) => t > cutoff);
+    if (!dbUp) return; // RPC probe done; the DB write waits for recovery
     const mem = process.memoryUsage();
     const rpcUrl = this.rpcUrls[this.rpcIndex];
     const tokensDetected = await prisma.detectedToken.count().catch(() => undefined);
@@ -290,6 +316,7 @@ class TradingEngine {
         tokensDetected,
         scannerError: this.scanner.lastPollError,
         settingsLoadedAt: this.config.loadedSettingsUpdatedAtMs,
+        ...dbResilience.snapshot(),
       },
     }).catch(() => {});
 
@@ -345,8 +372,6 @@ class TradingEngine {
 
   /** Throttled reminder that explains a persistently empty token list. */
   private lastEmptyReasonLogAt = 0;
-  /** Throttle for the database-unreachable warning (one line per minute). */
-  private lastDbDownLogAt = 0;
   private async logIfNoDetections(): Promise<void> {
     if (this.scanner.totalDetected > 0) return;
     if (Date.now() - this.lastEmptyReasonLogAt < 10 * 60_000) return;
@@ -371,44 +396,61 @@ class TradingEngine {
 
   private async onMigration(e: MigrationEvent): Promise<void> {
     if (this.watchlist.has(e.mint)) return;
-    const existing = await prisma.detectedToken.findUnique({ where: { mint: e.mint } });
-    // The websocket and polling paths can race on the same brand-new mint;
-    // the unique(mint) constraint makes the second insert fail (P2002), so
-    // fall back to reading the row the winner created.
-    const token =
-      existing ??
-      (await prisma.detectedToken
-        .create({
-          data: {
-            mint: e.mint,
-            poolAddress: e.poolAddress,
-            migratedAt: e.migratedAt,
-            verdict: null,
-          },
-        })
-        .catch(async (err) => {
-          if ((err as { code?: string }).code === "P2002") {
-            const row = await prisma.detectedToken.findUnique({ where: { mint: e.mint } });
-            if (row) return row;
-          }
-          throw err;
-        }));
-    this.watchlist.set(e.mint, {
-      tokenId: token.id,
-      mint: e.mint,
-      migratedAt: e.migratedAt,
-      evaluating: false,
-    });
-    await this.bumpDaily({ scanned: 1 });
-    const meta: Record<string, unknown> = { pool: e.poolAddress, signature: e.signature };
-    if (process.env.SCANNER_DEBUG === "1") {
-      meta.totalTokenRows = await prisma.detectedToken.count().catch(() => undefined);
+    // Database offline → queue the detection (deduped by mint) and keep
+    // scanning; the flush re-enters it into the watchlist on recovery.
+    if (!dbResilience.healthy) {
+      dbResilience.enqueueDetection({ mint: e.mint, poolAddress: e.poolAddress, migratedAt: e.migratedAt });
+      return;
     }
-    logger.info(
-      "scanner",
-      `migration detected: ${e.mint}${existing ? " (already in DB, re-watching)" : " (inserted)"}`,
-      meta
-    );
+    try {
+      const existing = await prisma.detectedToken.findUnique({ where: { mint: e.mint } });
+      // The websocket and polling paths can race on the same brand-new mint;
+      // the unique(mint) constraint makes the second insert fail (P2002), so
+      // fall back to reading the row the winner created.
+      const token =
+        existing ??
+        (await prisma.detectedToken
+          .create({
+            data: {
+              mint: e.mint,
+              poolAddress: e.poolAddress,
+              migratedAt: e.migratedAt,
+              verdict: null,
+            },
+          })
+          .catch(async (err) => {
+            if ((err as { code?: string }).code === "P2002") {
+              const row = await prisma.detectedToken.findUnique({ where: { mint: e.mint } });
+              if (row) return row;
+            }
+            throw err;
+          }));
+      this.watchlist.set(e.mint, {
+        tokenId: token.id,
+        mint: e.mint,
+        migratedAt: e.migratedAt,
+        evaluating: false,
+      });
+      await this.bumpDaily({ scanned: 1 });
+      const meta: Record<string, unknown> = { pool: e.poolAddress, signature: e.signature };
+      if (process.env.SCANNER_DEBUG === "1") {
+        meta.totalTokenRows = await prisma.detectedToken.count().catch(() => undefined);
+      }
+      logger.info(
+        "scanner",
+        `migration detected: ${e.mint}${existing ? " (already in DB, re-watching)" : " (inserted)"}`,
+        meta
+      );
+    } catch (err) {
+      // The database dropped mid-insert: open the circuit and queue the
+      // detection instead of surfacing a per-token Prisma error.
+      if (isTransientDbError(err)) {
+        dbResilience.recordFailure(err);
+        dbResilience.enqueueDetection({ mint: e.mint, poolAddress: e.poolAddress, migratedAt: e.migratedAt });
+        return;
+      }
+      throw err;
+    }
   }
 
   /** Read-only mode: scan and score, but never execute anything.
@@ -435,6 +477,9 @@ class TradingEngine {
     try {
       const age = Date.now() - t.migratedAt.getTime();
       if (age > WATCH_WINDOW_MS) {
+        // The expiry verdict needs a DB write; while offline, keep the token
+        // watched — it will be expired properly once the database is back.
+        if (!dbResilience.healthy) return;
         this.watchlist.delete(t.mint);
         forgetToken(t.mint);
         this.narrative.forget(t.mint);
@@ -463,6 +508,36 @@ class TradingEngine {
       const safeTotal = Number.isFinite(score.total)
         ? Math.round(Math.max(0, Math.min(100, score.total)))
         : 0;
+
+      // Database offline (circuit open): don't attempt any Prisma call —
+      // queue this evaluation's history (with its real timestamp) and move
+      // on. Verdicts/trades are deliberately NOT queued: verdicts are
+      // recomputed fresh next cycle, and stale trade decisions must never
+      // execute after the outage.
+      if (!dbResilience.healthy) {
+        dbResilience.enqueueScore({
+          tokenId: t.tokenId,
+          mint: t.mint,
+          at: new Date(),
+          score: {
+            total: safeTotal,
+            breakdown: JSON.parse(JSON.stringify(score.metrics)),
+            greenFlags: score.greenFlags.map((f) => f.label),
+            redFlags: score.redFlags.map((f) => f.label),
+            critical: score.criticalFlags.length > 0,
+          },
+          snapshot: {
+            priceUsd: fin(metrics.priceUsd),
+            liquiditySol: fin(metrics.liquiditySol),
+            marketCapUsd: fin(metrics.marketCapUsd),
+            volume5mUsd: fin(metrics.volume5mUsd),
+            holderCount: metrics.holderCount,
+            txPerMinute: fin(metrics.txPerMinute),
+            buySellRatio: fin(metrics.buySellRatio),
+          },
+        });
+        return;
+      }
 
       await prisma.$transaction([
         prisma.scoreRecord.create({
@@ -563,19 +638,10 @@ class TradingEngine {
       await this.tryBuy(t, metrics.priceUsd, metrics.symbol, score.total, score.explanation, decision.reasons, narrativeReport);
     } catch (e) {
       const err = e as Error & { code?: string; meta?: unknown };
-      // Database unreachable (P1001/P1002): this is an infrastructure
-      // outage, not a scoring bug — every token would "fail" identically.
-      // One throttled warning explains it; evaluations resume automatically
-      // when the database is back (nothing trades blind in the meantime).
-      if (err.code === "P1001" || err.code === "P1002") {
-        if (Date.now() - this.lastDbDownLogAt > 60_000) {
-          this.lastDbDownLogAt = Date.now();
-          logger.warn(
-            "engine",
-            "database unreachable (P1001) — evaluations paused this cycle and resume automatically when it is back. " +
-              "Recurring blips usually mean a free-tier Neon compute suspending; a Render PostgreSQL in the same account eliminates this."
-          );
-        }
+      // Database dropped mid-write: open the circuit (one structured status
+      // line, throttled) — subsequent evaluations queue instead of failing.
+      if (isTransientDbError(err)) {
+        dbResilience.recordFailure(err);
         return;
       }
       // The token row vanished mid-evaluation (P2025 record-not-found /
@@ -771,7 +837,16 @@ class TradingEngine {
   // ── position monitoring ───────────────────────────────────────────────────
 
   private async monitorPositions(): Promise<void> {
-    const positions = await prisma.position.findMany({ where: { status: "OPEN" } });
+    // Positions can't be read or exited without the database; skip the tick
+    // quietly while the circuit is open (the state tick handles recovery).
+    if (!dbResilience.healthy) return;
+    const positions = await prisma.position.findMany({ where: { status: "OPEN" } }).catch((e) => {
+      if (isTransientDbError(e)) {
+        dbResilience.recordFailure(e);
+        return [] as Awaited<ReturnType<typeof prisma.position.findMany>>;
+      }
+      throw e;
+    });
     if (positions.length === 0) return;
     const settings = this.config.get();
 

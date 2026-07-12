@@ -18,6 +18,15 @@ interface Diagnostics {
     lastScanAt: number | null;
     tokensDetected: number | null;
     settingsLoadedAt: number | null;
+    dbCircuit: {
+      status: "up" | "down" | null;
+      consecutiveFailures: number | null;
+      lastSuccessAt: number | null;
+      lastFailureAt: number | null;
+      lastFailureReason: string | null;
+      nextRetryInMs: number | null;
+      queuedWrites: number | null;
+    };
   } | null;
   settings: {
     preset: string;
@@ -30,7 +39,7 @@ interface Diagnostics {
     lastFailure: { at: number; message: string; meta: Record<string, unknown> | null } | null;
   } | null;
   lastError: { at: number; source: string; message: string; meta: Record<string, unknown> | null } | null;
-  version: { commit: string | null; node: string };
+  version: { commit: string | null; node: string; prisma: string };
 }
 
 function Row({ label, value, ok }: { label: string; value: React.ReactNode; ok?: boolean | null }) {
@@ -70,6 +79,7 @@ export default function DiagnosticsPage() {
             />
             <Row label="Deployed commit" value={d.version.commit ? d.version.commit.slice(0, 10) : "unknown"} />
             <Row label="Node" value={d.version.node} />
+            <Row label="Prisma" value={d.version.prisma} />
           </div>
 
           <div className="card">
@@ -85,6 +95,50 @@ export default function DiagnosticsPage() {
               </>
             ) : (
               <p className="text-xs text-slate-600">Unavailable while the database is unreachable.</p>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="stat-label mb-2">Database circuit (engine)</div>
+            {d.engine?.dbCircuit?.status ? (
+              <>
+                <Row
+                  label="Status"
+                  ok={d.engine.dbCircuit.status === "up"}
+                  value={d.engine.dbCircuit.status === "up" ? "online" : "OFFLINE — writes queued, probing"}
+                />
+                <Row
+                  label="Last successful query"
+                  value={d.engine.dbCircuit.lastSuccessAt ? `${timeAgo(new Date(d.engine.dbCircuit.lastSuccessAt))} ago` : "—"}
+                />
+                <Row
+                  label="Last failed query"
+                  ok={d.engine.dbCircuit.lastFailureAt ? null : true}
+                  value={
+                    d.engine.dbCircuit.lastFailureAt
+                      ? `${timeAgo(new Date(d.engine.dbCircuit.lastFailureAt))} ago — ${d.engine.dbCircuit.lastFailureReason ?? ""}`
+                      : "none recorded"
+                  }
+                />
+                <Row label="Consecutive failures" value={d.engine.dbCircuit.consecutiveFailures ?? 0} />
+                <Row
+                  label="Next retry"
+                  value={
+                    d.engine.dbCircuit.status === "down" && d.engine.dbCircuit.nextRetryInMs != null
+                      ? `in ${Math.round(d.engine.dbCircuit.nextRetryInMs / 1000)}s`
+                      : "— (online)"
+                  }
+                />
+                <Row
+                  label="Queued writes"
+                  ok={(d.engine.dbCircuit.queuedWrites ?? 0) === 0 ? true : null}
+                  value={d.engine.dbCircuit.queuedWrites ?? 0}
+                />
+              </>
+            ) : (
+              <p className="text-xs text-slate-600">
+                Reported by the engine heartbeat — appears once the engine runs this version.
+              </p>
             )}
           </div>
 
