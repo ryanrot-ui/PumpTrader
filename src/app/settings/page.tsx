@@ -10,7 +10,7 @@ import { WALLET_ERROR_EVENT } from "@/components/wallet/WalletProviders";
 import { TradingModeToggle } from "@/components/TradingModeToggle";
 import { usePoll } from "@/components/usePoll";
 import { shortMint, timeAgo } from "@/components/ui";
-import { SCALPING_PRESET, detectPreset } from "@/lib/presets";
+import { PRESETS, detectPreset } from "@/lib/presets";
 
 type SettingsForm = Record<string, unknown>;
 
@@ -42,6 +42,34 @@ const SECTIONS: Array<{
       { key: "trailingStopPct", label: "Trailing stop (%)", nullable: true, hint: "locks gains once in profit; empty = disabled" },
       { key: "maxHoldMinutes", label: "Time-based exit (minutes)", nullable: true, hint: "scalping default 10; empty = disabled" },
       { key: "sellPortionPct", label: "Sell portion at TP (%)" },
+    ],
+  },
+  {
+    title: "Entry timing (anti-chase)",
+    fields: [
+      {
+        key: "maxEntryPriceChange5mPct",
+        label: "Max 5m price change at entry (%)",
+        nullable: true,
+        hint: "reject entries after a vertical candle — don't chase; empty = disabled",
+      },
+      {
+        key: "maxEntryPriceChange1hPct",
+        label: "Max 1h price change at entry (%)",
+        nullable: true,
+        hint: "reject moves that already happened; empty = disabled",
+      },
+      {
+        key: "cutWeakAfterMinutes",
+        label: "Cut weak positions after (min)",
+        nullable: true,
+        hint: "exit flat/losing trades with dead buy pressure; empty = disabled",
+      },
+      {
+        key: "reportEveryTrades",
+        label: "Strategy report every N trades",
+        hint: "auto-generates the analytics report + weight recommendation",
+      },
     ],
   },
   {
@@ -93,6 +121,29 @@ const SECTIONS: Array<{
       { key: "minMemeScore", label: "Min meme strength (0–100)", nullable: true, hint: "meme quality gate; empty = disabled" },
       { key: "maxRugRiskScore", label: "Max rug risk (0–100)", nullable: true, hint: "evidence-based estimate, not a guarantee; empty = disabled" },
     ],
+  },
+];
+
+const BEHAVIOUR_TOGGLES: Array<{ key: string; label: string; hint: string }> = [
+  {
+    key: "letWinnersRun",
+    label: "Let winners run",
+    hint: "defer the take-profit target while buy pressure stays strong — the adaptive trail protects the gain (hard cap at 3× target)",
+  },
+  {
+    key: "adaptiveTrailing",
+    label: "Adaptive trailing stop",
+    hint: "the trail tightens as unrealized profit grows (full trail → 0.75× at target → 0.5× at 2× target)",
+  },
+  {
+    key: "requireRisingMomentum",
+    label: "Require accelerating momentum",
+    hint: "hard gate: only buy while the move is building (momentum acceleration > 0); fewer, earlier entries",
+  },
+  {
+    key: "autoRebalanceWeights",
+    label: "Auto-rebalance score weights",
+    hint: "apply the optimizer's data-driven weight recommendation automatically with each strategy report",
   },
 ];
 
@@ -181,6 +232,29 @@ export default function SettingsPage() {
             ))}
           </div>
 
+          {/* Behaviour toggles */}
+          <div className="card mt-4 max-w-3xl">
+            <div className="stat-label mb-2">Adaptive behaviour</div>
+            <div className="grid sm:grid-cols-2 gap-3">
+              {BEHAVIOUR_TOGGLES.map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setForm({ ...form, [t.key]: !form[t.key] })}
+                  className={`text-left p-2 rounded-lg border transition-colors ${
+                    form[t.key]
+                      ? "bg-accent/10 border-accent/40"
+                      : "bg-surface-overlay border-surface-border"
+                  }`}
+                >
+                  <span className={`text-xs font-medium ${form[t.key] ? "text-accent" : "text-slate-400"}`}>
+                    {form[t.key] ? "✓ " : ""}{t.label}
+                  </span>
+                  <p className="text-[10px] text-slate-600 mt-0.5">{t.hint}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Narrative exit mode */}
           <div className="card mt-4 max-w-xl">
             <div className="stat-label mb-1">Narrative exit strategy</div>
@@ -209,48 +283,65 @@ export default function SettingsPage() {
             </p>
           </div>
 
+          {/* Strategy profiles: apply AND save in one click — the engine
+              hot-reloads the new strategy within seconds. */}
+          <div className="card mt-4">
+            <div className="stat-label mb-1">Strategy profiles</div>
+            <p className="text-[11px] text-slate-600 mb-2">
+              One click applies and saves the profile — the running engine switches strategy
+              immediately. Profiles never change money/risk limits (buy size, exposure, daily loss).
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              {PRESETS.map((p) => {
+                const active = detectPreset(form as Record<string, unknown>) === p.name;
+                return (
+                  <button
+                    key={p.name}
+                    disabled={presetState === "applying"}
+                    title={p.description}
+                    onClick={async () => {
+                      setError(null);
+                      setPresetState("applying");
+                      const next = { ...form, ...p.values };
+                      setForm(next);
+                      const res = await fetch("/api/settings", {
+                        method: "PUT",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify(next),
+                      }).catch(() => null);
+                      if (!res?.ok) {
+                        const body = await res?.json().catch(() => ({}));
+                        setError((body as { error?: string })?.error ?? "Failed to save the preset — check the connection and try again");
+                        setPresetState("idle");
+                        return;
+                      }
+                      setPresetState("done");
+                      setTimeout(() => setPresetState("idle"), 4000);
+                    }}
+                    className={`text-xs px-3 py-1.5 rounded-full border transition-colors disabled:opacity-50 ${
+                      active
+                        ? "bg-profit/15 border-profit/50 text-profit"
+                        : "bg-surface-overlay border-surface-border text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    {active ? "✓ " : ""}{p.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-slate-600 mt-2">
+              {PRESETS.find((p) => p.name === detectPreset(form as Record<string, unknown>))?.description ??
+                "Custom configuration (doesn't match a named profile)."}
+            </p>
+            {presetState === "done" && (
+              <p className="text-profit text-xs mt-1">✓ Profile saved — engine reloading</p>
+            )}
+          </div>
+
           <div className="flex items-center gap-3 mt-4 flex-wrap">
             <button onClick={save} className="btn-primary px-6 py-2">
               Save settings
             </button>
-            <button
-              disabled={presetState === "applying"}
-              onClick={async () => {
-                if (!form) return;
-                setError(null);
-                setPresetState("applying");
-                // Apply AND save in one action: the form updates immediately
-                // and the same values are persisted, so the click always has
-                // a visible, confirmed effect.
-                const next = { ...form, ...SCALPING_PRESET };
-                setForm(next);
-                const res = await fetch("/api/settings", {
-                  method: "PUT",
-                  headers: { "content-type": "application/json" },
-                  body: JSON.stringify(next),
-                }).catch(() => null);
-                if (!res?.ok) {
-                  const body = await res?.json().catch(() => ({}));
-                  setError((body as { error?: string })?.error ?? "Failed to save the preset — check the connection and try again");
-                  setPresetState("idle");
-                  return;
-                }
-                setPresetState("done");
-                setTimeout(() => setPresetState("idle"), 5000);
-              }}
-              className="btn-ghost px-4 py-2 text-sm disabled:opacity-50"
-              title="Applies AND saves the momentum-scalping strategy: TP +12%, SL -6%, 5% trail, 10-min max hold, exit on buy-pressure/volume fade, momentum-weighted scoring."
-            >
-              {presetState === "applying" ? "Applying preset…" : "Apply scalping preset"}
-            </button>
-            {presetState === "done" && (
-              <span className="text-profit text-sm">✓ Scalping preset saved — engine reloading</span>
-            )}
-            {detectPreset(form as Record<string, unknown>) === "momentum-scalping" && presetState === "idle" && (
-              <span className="text-xs px-2 py-0.5 rounded bg-profit/10 text-profit">
-                Scalping preset active
-              </span>
-            )}
             {saved && <span className="text-profit text-sm">✓ Saved — engine reloading</span>}
             {error && <span className="text-loss text-sm">{error}</span>}
           </div>

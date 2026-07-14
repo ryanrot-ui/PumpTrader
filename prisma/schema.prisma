@@ -79,6 +79,22 @@ model Settings {
   exitVolumeFadePct    Float? @default(65) // exit when 5m volume fades ≥ this % vs entry
   exitLiquidityDropPct Float  @default(25) // emergency exit when liquidity drains ≥ this %
 
+  // Entry timing (anti-chase): never buy a move that already happened.
+  // null = gate disabled.
+  maxEntryPriceChange5mPct Float? @default(35) // reject if price already +this% in 5m
+  maxEntryPriceChange1hPct Float? @default(175) // reject if price already +this% in 1h
+  requireRisingMomentum    Boolean @default(false) // hard-require accelerating momentum
+
+  // Adaptive exits
+  letWinnersRun       Boolean @default(true) // defer TP while buy pressure is strong; trail protects
+  adaptiveTrailing    Boolean @default(true) // tighten the trail as unrealized profit grows
+  cutWeakAfterMinutes Float?  @default(4) // cut flat/losing positions with dead momentum after N min (null = off)
+
+  // Learning analytics: auto-apply the optimizer's recommended scoring
+  // weights each time a strategy report is generated.
+  autoRebalanceWeights Boolean @default(false)
+  reportEveryTrades    Int     @default(500) // auto strategy report cadence (closed trades)
+
   // Risk
   maxSolPerTrade    Float @default(0.25)
   maxOpenPositions  Int   @default(3)
@@ -337,6 +353,26 @@ model LogEntry {
   @@index([at])
   @@index([level])
   @@index([source])
+}
+
+// Auto-generated strategy performance report: full trade statistics, bucket
+// analyses, and the weight-optimizer's recommendation at generation time.
+// Written by the engine every `reportEveryTrades` closed trades and on demand
+// via POST /api/analytics.
+model StrategyReport {
+  id             String   @id @default(cuid())
+  at             DateTime @default(now())
+  mode           String   @default("all") // paper | live | all
+  tradesAnalyzed Int
+  trigger        String   @default("auto") // auto | manual
+  // Full TradeStats payload (learning/tradeStats.ts)
+  stats Json
+  // Optimizer output: recommended weights + per-metric evidence + prose
+  recommendations Json?
+  // Whether autoRebalanceWeights applied the recommendation to settings
+  weightsApplied Boolean @default(false)
+
+  @@index([at])
 }
 
 model DailyStats {

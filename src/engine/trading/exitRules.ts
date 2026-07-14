@@ -24,6 +24,7 @@ export interface ExitDecision {
     | "time_exit"
     | "rug_exit"
     | "momentum_exit"
+    | "weak_exit"
     | null;
   portionPct: number; // % of position to sell
   reason: string;
@@ -35,11 +36,38 @@ const HOLD: ExitDecision = { exit: false, kind: null, portionPct: 0, reason: "ho
  *  trigger them before the market has printed a fresh 5m window. */
 const MOMENTUM_GRACE_MS = 60_000;
 
+/** Buy pressure above this while at the TP target = momentum still strong →
+ *  defer the take profit and let the (tightened) trailing stop protect it. */
+const STRONG_BUY_RATIO = 1.5;
+/** …but never defer past this multiple of the TP target: bank extraordinary
+ *  gains even if buyers keep coming (meme spikes retrace violently). */
+const RUNNER_HARD_CAP_MULT = 3;
+
+/**
+ * Trailing distance for the current unrealized gain. With adaptiveTrailing
+ * the trail *tightens* as profit grows, so a small winner gets room to
+ * develop but a big winner is defended hard:
+ *   gain < TP target      → base trail
+ *   gain ≥ 1× TP target   → 0.75× base
+ *   gain ≥ 2× TP target   → 0.5× base
+ */
+export function trailDistancePct(s: BotSettings, gainPct: number): number | null {
+  if (s.trailingStopPct === null) return null;
+  if (!s.adaptiveTrailing) return s.trailingStopPct;
+  if (gainPct >= 2 * s.takeProfitPct) return s.trailingStopPct * 0.5;
+  if (gainPct >= s.takeProfitPct) return s.trailingStopPct * 0.75;
+  return s.trailingStopPct;
+}
+
 /**
  * Exit evaluation for one open position. Pure and deterministic.
- * Priority: rug exit > stop loss > momentum exits > trailing stop >
- * take profit > time exit. Scalping defaults: +12% TP, -6% SL, 5% trail,
- * 10 min max hold, exit when buy pressure or volume fades.
+ * Priority: rug exit > stop loss > momentum exits > weak-trade cut >
+ * trailing stop > take profit > time exit.
+ *
+ * Philosophy: cut anything that isn't working (weak cut, momentum exits,
+ * tight stop), and only stay in a trade while buyers are still paying up —
+ * winners run behind an adaptive trail instead of being capped at the first
+ * target when momentum is strong.
  */
 export function evaluateExit(s: BotSettings, p: OpenPositionView): ExitDecision {
   const pnlPct = ((p.currentPriceUsd - p.entryPriceUsd) / p.entryPriceUsd) * 100;
@@ -108,32 +136,70 @@ export function evaluateExit(s: BotSettings, p: OpenPositionView): ExitDecision 
     }
   }
 
-  // 4. Trailing stop (only once in profit, so it never fires before stop loss)
-  if (s.trailingStopPct !== null && p.currentPriceUsd > p.entryPriceUsd) {
+  // 4. Weak-trade cut: the trade never worked — flat-to-losing after the
+  //    configured window with buyers no longer in control. Don't hold losers
+  //    hoping they recover; the capital belongs in the next setup.
+  //    Requires real flow data: missing buy/sell data is neutral, never a
+  //    trigger (same missing-data philosophy as the scoring engine).
+  if (
+    s.cutWeakAfterMinutes !== null &&
+    heldMs >= s.cutWeakAfterMinutes * 60_000 &&
+    p.buySellRatio5m !== null &&
+    p.buySellRatio5m !== undefined &&
+    p.buySellRatio5m < 1 &&
+    pnlPct <= 1
+  ) {
+    return {
+      exit: true,
+      kind: "weak_exit",
+      portionPct: 100,
+      reason: `weak position: ${pnlPct.toFixed(1)}% after ${(heldMs / 60_000).toFixed(1)} min with buy/sell ${p.buySellRatio5m.toFixed(2)} — cutting instead of hoping`,
+    };
+  }
+
+  // 5. Trailing stop (only once in profit, so it never fires before stop
+  //    loss). Adaptive: the trail tightens as the gain grows.
+  const peakGainPct = ((p.peakPriceUsd - p.entryPriceUsd) / p.entryPriceUsd) * 100;
+  const trail = trailDistancePct(s, peakGainPct);
+  if (trail !== null && p.currentPriceUsd > p.entryPriceUsd) {
     const dropFromPeak = ((p.peakPriceUsd - p.currentPriceUsd) / p.peakPriceUsd) * 100;
-    if (dropFromPeak >= s.trailingStopPct) {
+    if (dropFromPeak >= trail) {
       return {
         exit: true,
         kind: "trailing_stop",
         portionPct: 100,
-        reason: `trailing stop: ${dropFromPeak.toFixed(1)}% off peak (limit ${s.trailingStopPct}%), locking ${pnlPct.toFixed(1)}%`,
+        reason: `trailing stop: ${dropFromPeak.toFixed(1)}% off peak (limit ${trail.toFixed(1)}%${s.adaptiveTrailing ? ", adaptive" : ""}), locking ${pnlPct.toFixed(1)}%`,
       };
     }
   }
 
-  // 5. Take profit
+  // 6. Take profit — adaptive: while buy pressure is still strong the target
+  //    is deferred and the tightened trailing stop defends the gain (winners
+  //    run); a hard cap at 3× the target banks extraordinary spikes anyway.
   if (pnlPct >= s.takeProfitPct) {
-    return {
-      exit: true,
-      kind: "take_profit",
-      portionPct: s.sellPortionPct,
-      reason: `take profit: +${pnlPct.toFixed(1)}% ≥ +${s.takeProfitPct}% target`,
-    };
+    const momentumStrong =
+      s.letWinnersRun &&
+      trail !== null && // deferring TP without a trail would be unprotected
+      p.buySellRatio5m !== null &&
+      p.buySellRatio5m !== undefined &&
+      p.buySellRatio5m >= STRONG_BUY_RATIO;
+    const hardCap = pnlPct >= s.takeProfitPct * RUNNER_HARD_CAP_MULT;
+    if (!momentumStrong || hardCap) {
+      return {
+        exit: true,
+        kind: "take_profit",
+        portionPct: s.sellPortionPct,
+        reason: hardCap
+          ? `take profit (runner cap): +${pnlPct.toFixed(1)}% ≥ ${RUNNER_HARD_CAP_MULT}× the +${s.takeProfitPct}% target`
+          : `take profit: +${pnlPct.toFixed(1)}% ≥ +${s.takeProfitPct}% target${s.letWinnersRun ? ` (buy pressure ${p.buySellRatio5m?.toFixed(2) ?? "unknown"} no longer strong)` : ""}`,
+      };
+    }
+    // deferring: trailing stop above is the protection
   }
 
-  // 6. Time-based exit
+  // 7. Time-based exit
   if (s.maxHoldMinutes !== null) {
-    const heldMin = ((p.now ?? new Date()).getTime() - p.openedAt.getTime()) / 60_000;
+    const heldMin = heldMs / 60_000;
     if (heldMin >= s.maxHoldMinutes) {
       return {
         exit: true,

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { publish, CHANNELS } from "@/lib/redis";
+import { dbResilience } from "@/engine/db/resilience";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type LogSource = "scanner" | "scoring" | "executor" | "risk" | "api" | "notify" | "engine";
@@ -23,7 +24,12 @@ export function log(
 
   // debug stays console-only: persisting per-token debug chatter is the
   // single biggest source of avoidable write volume on a free-tier database.
-  if (level !== "debug") {
+  // While the circuit is open the DB persist is skipped entirely — every log
+  // line would otherwise fire one more doomed connection attempt at a
+  // database we already know is down (console + live feed still record it;
+  // log rows are deliberately not queued: low-value bulk that would crowd
+  // the offline queue and replay as a write burst on recovery).
+  if (level !== "debug" && dbResilience.healthy) {
     void prisma.logEntry
       .create({ data: { level, source, message, meta: meta ? JSON.parse(JSON.stringify(meta)) : undefined } })
       .catch(() => {});

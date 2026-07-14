@@ -24,20 +24,10 @@ import { prisma } from "@/lib/prisma";
  * market data from during the outage must not execute minutes later.
  */
 
-const TRANSIENT_CODES = new Set([
-  "P1001", // can't reach database server
-  "P1002", // server reached but timed out
-  "P1008", // operation timed out
-  "P1017", // server closed the connection
-]);
-
-export function isTransientDbError(e: unknown): boolean {
-  const err = e as { code?: string; message?: string };
-  if (err?.code && TRANSIENT_CODES.has(err.code)) return true;
-  return /Can't reach database server|Connection refused|ECONNREFUSED|ETIMEDOUT|Timed out fetching|Closed the connection|Connection terminated/i.test(
-    err?.message ?? ""
-  );
-}
+// Shared with the web app (lib/dbGuard uses it for 503s); re-exported here so
+// engine code keeps importing it from the resilience module.
+export { isTransientDbError } from "@/lib/dbErrors";
+import { dbErrorSummary } from "@/lib/dbErrors";
 
 export interface QueuedDetection {
   mint: string;
@@ -89,6 +79,9 @@ export class DbResilience {
 
   /** Called after a queued detection is flushed, so the engine can watch it. */
   onDetectionFlushed: (tokenId: string, d: QueuedDetection) => void = () => {};
+  /** Called once per recovery, after the circuit closes and the queues are
+   *  flushed — e.g. to re-run crash recovery that failed at boot. */
+  onReconnected: () => void = () => {};
   /** DB-independent log sink (console) — never writes to the database. */
   private log(line: string): void {
     console.warn(line);
@@ -115,12 +108,7 @@ export class DbResilience {
   recordFailure(e: unknown, now = Date.now()): void {
     this.consecutiveFailures += 1;
     this.lastFailureAt = now;
-    this.lastFailureReason =
-      ((e as Error).message ?? "unknown")
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .find((l) => !l.startsWith("Invalid ")) ?? "unknown";
+    this.lastFailureReason = dbErrorSummary(e);
 
     const firstFailure = this.openedAt === null;
     if (firstFailure) this.openedAt = now;
@@ -153,6 +141,7 @@ export class DbResilience {
         `${failed > 0 ? ` (${failed} skipped)` : ""}${this.droppedWrites > 0 ? `; ${this.droppedWrites} dropped while offline` : ""} — engine resumed`
     );
     this.droppedWrites = 0;
+    this.onReconnected();
   }
 
   enqueueDetection(d: QueuedDetection): void {

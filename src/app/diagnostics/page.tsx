@@ -14,6 +14,20 @@ interface Diagnostics {
     readOnly: boolean;
     rpcUrl: string | null;
     rpcLatencyMs: number | null;
+    rpcHealth: number | null;
+    rpcTimeouts: number | null;
+    rpcLastSuccessAt: number | null;
+    rpcEndpoints: Array<{
+      url: string;
+      active: boolean;
+      health: number;
+      latencyMs: number | null;
+      timeouts: number;
+      failures: number;
+      lastSuccessAt: number | null;
+      lastError: string | null;
+    }> | null;
+    rpcFailoverHistory: Array<{ at: number; from: string; to: string; reason: string }> | null;
     scannerSubscribed: boolean | null;
     lastScanAt: number | null;
     tokensDetected: number | null;
@@ -143,13 +157,45 @@ export default function DiagnosticsPage() {
           </div>
 
           <div className="card">
+            <div className="stat-label mb-2">RPC endpoints</div>
+            {d.engine?.rpcEndpoints && d.engine.rpcEndpoints.length > 0 ? (
+              <>
+                {d.engine.rpcEndpoints.map((e) => (
+                  <Row
+                    key={e.url}
+                    label={`${e.active ? "▶ " : ""}${e.url.replace(/^https?:\/\//, "").slice(0, 28)}`}
+                    ok={e.health >= 70 ? true : e.health < 40 ? false : null}
+                    value={`health ${e.health}/100 · ${e.latencyMs != null ? `${e.latencyMs}ms` : "—"} · ${e.timeouts} timeout${e.timeouts === 1 ? "" : "s"}${e.lastSuccessAt ? ` · ok ${timeAgo(new Date(e.lastSuccessAt))} ago` : ""}`}
+                  />
+                ))}
+                {(d.engine.rpcFailoverHistory ?? []).length > 0 ? (
+                  <div className="mt-2">
+                    <div className="text-[10px] text-slate-500 mb-1">Failover history</div>
+                    {d.engine.rpcFailoverHistory!.slice(-5).reverse().map((f, i) => (
+                      <p key={i} className="text-[10px] text-slate-500 truncate" title={f.reason}>
+                        {timeAgo(new Date(f.at))} ago: → {f.to.replace(/^https?:\/\//, "").slice(0, 30)} ({f.reason})
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-slate-600 mt-2">No failovers recorded.</p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-slate-600">
+                Reported by the engine heartbeat — appears once the engine runs this version.
+              </p>
+            )}
+          </div>
+
+          <div className="card">
             <div className="stat-label mb-2">Strategy & settings</div>
             {d.settings ? (
               <>
                 <Row
                   label="Active preset"
-                  ok={d.settings.preset === "momentum-scalping" ? true : null}
-                  value={d.settings.preset === "momentum-scalping" ? "Momentum scalping" : "Custom"}
+                  ok={d.settings.preset !== "custom" ? true : null}
+                  value={d.settings.preset === "custom" ? "Custom" : d.settings.preset}
                 />
                 <Row label="Settings changed" value={`${timeAgo(new Date(d.settings.updatedAt))} ago`} />
                 <Row

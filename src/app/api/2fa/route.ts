@@ -3,11 +3,13 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { encryptSecret, decryptSecret } from "@/lib/crypto";
 import { generateTotpSecret, totpUri, verifyTotp } from "@/lib/totp";
-import { requireUser, unauthorized } from "@/lib/session";
+// requireDbUser (not requireUser): 2FA needs fresh totpEnabled/totpSecret
+// columns, which the JWT deliberately does not carry.
+import { requireDbUser, unauthorized } from "@/lib/session";
 import { rateLimit } from "@/lib/rateLimit";
 
 export async function GET() {
-  const user = await requireUser();
+  const user = await requireDbUser();
   if (!user) return unauthorized();
   return NextResponse.json({ enabled: user.totpEnabled });
 }
@@ -24,7 +26,7 @@ const bodySchema = z.union([
  * disable requires a valid code. All transitions are audit-logged.
  */
 export async function POST(req: Request) {
-  const user = await requireUser();
+  const user = await requireDbUser();
   if (!user) return unauthorized();
   if (!(await rateLimit(`2fa:${user.id}`, 10, 900))) {
     return NextResponse.json({ error: "Too many attempts" }, { status: 429 });

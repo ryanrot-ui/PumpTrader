@@ -92,4 +92,24 @@ describe("DbResilience circuit breaker", () => {
     expect(db.retries).toBe(0);
     expect(db.snapshot().dbStatus).toBe("up");
   });
+
+  it("fires onReconnected once per recovery, never while healthy", async () => {
+    const db = new DbResilience();
+    let reconnects = 0;
+    db.onReconnected = () => {
+      reconnects += 1;
+    };
+
+    await db.recordSuccess(); // healthy — no reconnect event
+    expect(reconnects).toBe(0);
+
+    db.recordFailure(p1001);
+    await db.recordSuccess(); // down → up: one event
+    await db.recordSuccess(); // still up: no extra event
+    expect(reconnects).toBe(1);
+
+    db.recordFailure(p1001);
+    await db.recordSuccess(); // second outage → second event
+    expect(reconnects).toBe(2);
+  });
 });

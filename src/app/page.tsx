@@ -15,6 +15,15 @@ import { usePoll } from "@/components/usePoll";
 import { ScoreBadge, Sol, StatCard, shortMint, timeAgo } from "@/components/ui";
 import { HealthIndicators, type Health } from "@/components/HealthIndicators";
 
+interface BucketStat {
+  label: string;
+  trades: number;
+  wins: number;
+  winRate: number | null;
+  pnlSol: number;
+  avgPnlPct: number | null;
+}
+
 interface Stats {
   totalTrades: number;
   winningTrades: number;
@@ -34,6 +43,29 @@ interface Stats {
   avgPnlSol: number | null;
   largestWinSol: number | null;
   largestLossSol: number | null;
+  // Professional metrics
+  profitFactor: number | null;
+  expectancySol: number | null;
+  expectancyPct: number | null;
+  avgWinnerSol: number | null;
+  avgLoserSol: number | null;
+  avgWinnerPct: number | null;
+  avgLoserPct: number | null;
+  avgRiskReward: number | null;
+  sharpe: number | null;
+  maxDrawdownSol: number | null;
+  maxDrawdownPct: number | null;
+  avgHoldMinutesWinners: number | null;
+  avgHoldMinutesLosers: number | null;
+  avgEntryDelayMs: number | null;
+  avgGivebackPct: number | null;
+  roundTrips: number;
+  maxConsecutiveWins: number;
+  maxConsecutiveLosses: number;
+  currentStreak: number;
+  byScore: BucketStat[];
+  byExitKind: BucketStat[];
+  byHourUtc: BucketStat[];
   equityCurve: Array<{ date: string; realizedSol: number; cumulativeSol: number }>;
   today: { realizedSol: number; trades: number; scanned: number; bought: number; rejected: number } | null;
 }
@@ -151,29 +183,93 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Performance detail */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      {/* Professional metrics — the numbers the strategy is actually judged by */}
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-4">
         <StatCard
-          label="Avg hold time"
-          value={stats?.avgHoldMinutes != null ? `${stats.avgHoldMinutes.toFixed(0)}m` : "—"}
-          sub={`${stats?.totalTrades ?? 0} trades executed`}
+          label="Profit factor"
+          value={stats?.profitFactor != null ? stats.profitFactor.toFixed(2) : "—"}
+          sub="gross wins ÷ gross losses"
+          tone={stats?.profitFactor != null ? (stats.profitFactor >= 1 ? "profit" : "loss") : "neutral"}
         />
         <StatCard
-          label="Avg PnL / trade"
-          value={stats?.avgPnlSol != null ? `${stats.avgPnlSol >= 0 ? "+" : ""}${stats.avgPnlSol.toFixed(4)}` : "—"}
-          tone={stats?.avgPnlSol != null ? (stats.avgPnlSol > 0 ? "profit" : "loss") : "neutral"}
+          label="Expectancy"
+          value={stats?.expectancySol != null ? `${stats.expectancySol >= 0 ? "+" : ""}${stats.expectancySol.toFixed(4)}` : "—"}
+          sub={`SOL/trade · ${stats?.expectancyPct != null ? `${stats.expectancyPct >= 0 ? "+" : ""}${stats.expectancyPct.toFixed(1)}%` : "—"} avg ROI`}
+          tone={stats?.expectancySol != null ? (stats.expectancySol > 0 ? "profit" : "loss") : "neutral"}
         />
         <StatCard
-          label="Largest winner"
-          value={stats?.largestWinSol != null ? `+${stats.largestWinSol.toFixed(4)}` : "—"}
-          tone="profit"
+          label="Avg winner / loser"
+          value={
+            stats?.avgWinnerSol != null || stats?.avgLoserSol != null
+              ? `+${stats?.avgWinnerSol?.toFixed(4) ?? "0"} / -${stats?.avgLoserSol?.toFixed(4) ?? "0"}`
+              : "—"
+          }
+          sub={`R:R ${stats?.avgRiskReward != null ? stats.avgRiskReward.toFixed(2) : "—"} · ${stats?.avgWinnerPct != null ? `+${stats.avgWinnerPct.toFixed(1)}%` : "—"} / ${stats?.avgLoserPct != null ? `-${stats.avgLoserPct.toFixed(1)}%` : "—"}`}
         />
         <StatCard
-          label="Largest loser"
-          value={stats?.largestLossSol != null ? stats.largestLossSol.toFixed(4) : "—"}
-          tone={stats?.largestLossSol ? "loss" : "neutral"}
+          label="Sharpe (per trade)"
+          value={stats?.sharpe != null ? stats.sharpe.toFixed(2) : "—"}
+          sub="mean ÷ stdev of trade ROI"
+          tone={stats?.sharpe != null ? (stats.sharpe > 0 ? "profit" : "loss") : "neutral"}
+        />
+        <StatCard
+          label="Max drawdown"
+          value={stats?.maxDrawdownSol != null ? `-${stats.maxDrawdownSol.toFixed(3)}` : "—"}
+          sub={`SOL${stats?.maxDrawdownPct != null ? ` · ${stats.maxDrawdownPct.toFixed(0)}% off peak` : ""}`}
+          tone={stats?.maxDrawdownSol ? "loss" : "neutral"}
+        />
+        <StatCard
+          label="Streaks"
+          value={
+            stats
+              ? `${stats.currentStreak > 0 ? `${stats.currentStreak}W` : stats.currentStreak < 0 ? `${-stats.currentStreak}L` : "—"}`
+              : "—"
+          }
+          sub={`best ${stats?.maxConsecutiveWins ?? 0}W · worst ${stats?.maxConsecutiveLosses ?? 0}L`}
+          tone={stats && stats.currentStreak !== 0 ? (stats.currentStreak > 0 ? "profit" : "loss") : "neutral"}
         />
       </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <StatCard
+          label="Hold: winners vs losers"
+          value={
+            stats?.avgHoldMinutesWinners != null || stats?.avgHoldMinutesLosers != null
+              ? `${stats?.avgHoldMinutesWinners?.toFixed(1) ?? "—"}m / ${stats?.avgHoldMinutesLosers?.toFixed(1) ?? "—"}m`
+              : "—"
+          }
+          sub={`overall avg ${stats?.avgHoldMinutes != null ? `${stats.avgHoldMinutes.toFixed(1)}m` : "—"}`}
+        />
+        <StatCard
+          label="Entry delay"
+          value={stats?.avgEntryDelayMs != null ? `${(stats.avgEntryDelayMs / 1000).toFixed(1)}s` : "—"}
+          sub="detection → buy, average"
+        />
+        <StatCard
+          label="Exit giveback"
+          value={stats?.avgGivebackPct != null ? `${stats.avgGivebackPct.toFixed(1)}%` : "—"}
+          sub={`peak→exit on winners · ${stats?.roundTrips ?? 0} round trips`}
+          tone={stats?.avgGivebackPct != null && stats.avgGivebackPct > 8 ? "loss" : "neutral"}
+        />
+        <StatCard
+          label="Largest win / loss"
+          value={
+            stats?.largestWinSol != null
+              ? `+${stats.largestWinSol.toFixed(4)} / ${stats.largestLossSol?.toFixed(4) ?? "0"}`
+              : "—"
+          }
+          sub={`avg PnL/trade ${stats?.avgPnlSol != null ? `${stats.avgPnlSol >= 0 ? "+" : ""}${stats.avgPnlSol.toFixed(4)}` : "—"}`}
+        />
+      </div>
+
+      {/* Performance breakdowns: where the money is actually made and lost */}
+      {stats && stats.closedPositions > 0 && (
+        <div className="grid md:grid-cols-3 gap-4 mb-4">
+          <BucketTable title="Win rate by score" buckets={stats.byScore} />
+          <BucketTable title="PnL by exit reason" buckets={stats.byExitKind} />
+          <BucketTable title="PnL by hour (UTC)" buckets={[...stats.byHourUtc].sort((a, b) => b.pnlSol - a.pnlSol).slice(0, 6)} />
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-3 gap-4">
         {/* PnL chart */}
@@ -351,6 +447,42 @@ export default function Dashboard() {
         </div>
       </div>
     </AppShell>
+  );
+}
+
+function BucketTable({ title, buckets }: { title: string; buckets: BucketStat[] }) {
+  return (
+    <div className="card">
+      <div className="stat-label mb-2">{title}</div>
+      {buckets.length === 0 ? (
+        <p className="text-sm text-slate-600">Not enough closed trades yet.</p>
+      ) : (
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-slate-500 border-b border-surface-border">
+              <th className="pb-1 pr-2 font-normal"> </th>
+              <th className="pb-1 pr-2 font-normal text-right">Trades</th>
+              <th className="pb-1 pr-2 font-normal text-right">Win %</th>
+              <th className="pb-1 font-normal text-right">PnL (SOL)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {buckets.map((b) => (
+              <tr key={b.label} className="border-b border-surface-border/40">
+                <td className="py-1 pr-2 text-slate-300">{b.label.replace(/_/g, " ")}</td>
+                <td className="py-1 pr-2 text-right text-slate-400">{b.trades}</td>
+                <td className="py-1 pr-2 text-right text-slate-400">
+                  {b.winRate != null ? `${b.winRate.toFixed(0)}%` : "—"}
+                </td>
+                <td className={`py-1 text-right font-mono ${b.pnlSol > 0 ? "text-profit" : b.pnlSol < 0 ? "text-loss" : "text-slate-400"}`}>
+                  {b.pnlSol >= 0 ? "+" : ""}{b.pnlSol.toFixed(3)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 

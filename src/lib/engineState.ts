@@ -40,6 +40,21 @@ export interface EngineHealth {
   scannerError?: string | null;
   /** updatedAt (epoch ms) of the settings row the engine currently runs on. */
   settingsLoadedAt?: number | null;
+  // ── RPC endpoint health (per-endpoint scoring + failover history) ────────
+  rpcEndpoints?: Array<{
+    url: string;
+    active: boolean;
+    health: number;
+    latencyMs: number | null;
+    timeouts: number;
+    failures: number;
+    lastSuccessAt: number | null;
+    lastError: string | null;
+  }>;
+  rpcHealth?: number | null;
+  rpcTimeouts?: number;
+  rpcLastSuccessAt?: number | null;
+  rpcFailoverHistory?: Array<{ at: number; from: string; to: string; reason: string }>;
   // ── database circuit breaker (engine-side Neon resilience) ───────────────
   dbStatus?: "up" | "down";
   dbConsecutiveFailures?: number;

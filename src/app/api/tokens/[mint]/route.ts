@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireUser, unauthorized } from "@/lib/session";
+import { dbGuard } from "@/lib/dbGuard";
 
-export async function GET(
+async function handleGet(
   _req: Request,
   { params }: { params: Promise<{ mint: string }> }
 ) {
@@ -21,3 +22,5 @@ export async function GET(
   if (!token) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json(token);
 }
+
+export const GET = dbGuard(handleGet);

@@ -80,6 +80,12 @@ export async function GET() {
       readOnly: state?.readOnly ?? false,
       rpcUrl: health.rpcUrl ?? null,
       rpcLatencyMs: health.rpcLatencyMs ?? null,
+      // per-endpoint RPC health scoring + failover history
+      rpcHealth: health.rpcHealth ?? null,
+      rpcTimeouts: health.rpcTimeouts ?? null,
+      rpcLastSuccessAt: health.rpcLastSuccessAt ?? null,
+      rpcEndpoints: health.rpcEndpoints ?? null,
+      rpcFailoverHistory: health.rpcFailoverHistory ?? null,
       scannerSubscribed: health.scannerSubscribed ?? null,
       lastScanAt: health.lastScanAt ?? null,
       tokensDetected: health.tokensDetected ?? null,

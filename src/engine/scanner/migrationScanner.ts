@@ -1,4 +1,5 @@
 import { Connection, PublicKey, type ParsedTransactionWithMeta } from "@solana/web3.js";
+import { withRpcRetry } from "../rpc/health";
 
 /**
  * Detects Pump.fun bonding-curve graduations ("migrations") in real time.
@@ -154,10 +155,17 @@ export class MigrationScanner {
    *  subscriptions with a 403. `lastPollAt` proves the scanner loop is live. */
   private async pollRecent(): Promise<void> {
     try {
-      const sigs = await this.conn.getSignaturesForAddress(
-        PUMP_MIGRATION_AUTHORITY,
-        { limit: 25, until: this.lastPolledSig },
-        "confirmed"
+      // Transient RPC failures (timeouts, 429s) are retried with backoff so a
+      // single hiccup never surfaces as a failed scan cycle — only an endpoint
+      // that stays down after retries reaches the error path / failover logic.
+      const sigs = await withRpcRetry(
+        () =>
+          this.conn.getSignaturesForAddress(
+            PUMP_MIGRATION_AUTHORITY,
+            { limit: 25, until: this.lastPolledSig },
+            "confirmed"
+          ),
+        { retries: 2, baseDelayMs: 750 }
       );
       this.lastPollAt = Date.now();
       this.lastPollCount = sigs.length;
@@ -202,10 +210,14 @@ export class MigrationScanner {
       this.seen = new Set(keep);
     }
 
-    const tx = await this.conn.getParsedTransaction(signature, {
-      maxSupportedTransactionVersion: 0,
-      commitment: "confirmed",
-    });
+    const tx = await withRpcRetry(
+      () =>
+        this.conn.getParsedTransaction(signature, {
+          maxSupportedTransactionVersion: 0,
+          commitment: "confirmed",
+        }),
+      { retries: 2, baseDelayMs: 500 }
+    );
     if (!tx) {
       if (SCANNER_DEBUG) console.log(`[scanner-debug] ${signature}: tx not fetchable yet`);
       return;

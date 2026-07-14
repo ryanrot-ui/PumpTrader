@@ -56,6 +56,20 @@ export const settingsSchema = z.object({
   exitVolumeFadePct: z.number().min(1).max(100).nullable(),
   exitLiquidityDropPct: z.number().min(1).max(100),
 
+  // Entry timing (anti-chase) — null = gate disabled
+  maxEntryPriceChange5mPct: z.number().min(1).max(10_000).nullable(),
+  maxEntryPriceChange1hPct: z.number().min(1).max(100_000).nullable(),
+  requireRisingMomentum: z.boolean(),
+
+  // Adaptive exits
+  letWinnersRun: z.boolean(),
+  adaptiveTrailing: z.boolean(),
+  cutWeakAfterMinutes: z.number().min(0.5).max(24 * 60).nullable(),
+
+  // Learning analytics
+  autoRebalanceWeights: z.boolean(),
+  reportEveryTrades: z.number().int().min(20).max(100_000),
+
   // Risk
   maxSolPerTrade: z.number().positive().max(1000),
   maxOpenPositions: z.number().int().min(1).max(50),

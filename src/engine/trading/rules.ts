@@ -167,6 +167,42 @@ export function evaluateBuyRules(
       ? `estimated slippage ${m.estSlippagePctFor1Sol.toFixed(1)}% vs max ${(s.maxSlippageBps / 100).toFixed(1)}%`
       : "slippage estimate unavailable"
   );
+  // Entry timing (anti-chase): a move that already happened is not a setup —
+  // buying it is exit liquidity. These are hard gates because a late entry
+  // structurally inverts the reward/risk the exits are tuned for.
+  if (s.maxEntryPriceChange5mPct !== null) {
+    add(
+      "safety",
+      true,
+      "entry timing (5m)",
+      m.priceChange5mPct === null || m.priceChange5mPct <= s.maxEntryPriceChange5mPct,
+      m.priceChange5mPct !== null
+        ? `price ${m.priceChange5mPct >= 0 ? "+" : ""}${m.priceChange5mPct.toFixed(0)}% in 5m vs chase limit +${s.maxEntryPriceChange5mPct}%`
+        : "5m price change unknown"
+    );
+  }
+  if (s.maxEntryPriceChange1hPct !== null) {
+    add(
+      "safety",
+      true,
+      "entry timing (1h)",
+      m.priceChange1hPct === null || m.priceChange1hPct <= s.maxEntryPriceChange1hPct,
+      m.priceChange1hPct !== null
+        ? `price ${m.priceChange1hPct >= 0 ? "+" : ""}${m.priceChange1hPct.toFixed(0)}% in 1h vs exhaustion limit +${s.maxEntryPriceChange1hPct}% — biggest move likely already made`
+        : "1h price change unknown"
+    );
+  }
+  if (s.requireRisingMomentum) {
+    add(
+      "safety",
+      true,
+      "rising momentum",
+      m.momentumAcceleration !== null && m.momentumAcceleration > 0,
+      m.momentumAcceleration !== null
+        ? `momentum acceleration ${m.momentumAcceleration.toFixed(2)} (must be > 0: buy moves that are building, not fading)`
+        : "momentum acceleration unknown (fails closed while requireRisingMomentum is on)"
+    );
+  }
 
   // ── Layer 2: OPPORTUNITY — score vs threshold ────────────────────────────
   const scoreOk = score.total >= s.confidenceThreshold;
@@ -225,6 +261,16 @@ export function evaluateBuyRules(
     "momentum",
     m.momentum === null || m.momentum > 0,
     `momentum ${m.momentum?.toFixed(2) ?? "unknown"}%/min`
+  );
+  advisory(
+    "momentum building",
+    m.momentumAcceleration === null || m.momentumAcceleration >= 0,
+    `momentum acceleration ${m.momentumAcceleration?.toFixed(2) ?? "unknown"} (prefer entries while the move is building)`
+  );
+  advisory(
+    "holder growth",
+    m.holderGrowth5m === null || m.holderGrowth5m > 0,
+    `holder growth ${m.holderGrowth5m ?? "unknown"}/5m (prefer early holder growth before the move)`
   );
   if (s.minNarrativeScore !== null) {
     advisory(

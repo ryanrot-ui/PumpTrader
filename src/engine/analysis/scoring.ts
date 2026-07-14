@@ -194,10 +194,26 @@ function buildMetricScores(m: TokenMetrics, w: ScoringWeights): MetricScore[] {
       s: (() => {
         if (m.momentum === null) return { value: NEUTRAL, detail: "momentum unknown" };
         let v = band(m.momentum, -1, 0.1, 3, 12); // vertical candles get penalised
+        // Accelerating momentum (the move is BUILDING) is worth more than the
+        // same slope decelerating (the move is ENDING) — entries should catch
+        // moves before the peak, not after it.
         if (m.momentumAcceleration !== null && m.momentumAcceleration > 0) {
           v = Math.min(1, v + 0.15);
+        } else if (m.momentumAcceleration !== null && m.momentumAcceleration < 0) {
+          v = Math.max(0, v - 0.15);
         }
-        return { value: v, detail: `momentum ${m.momentum.toFixed(2)}%/min` };
+        return {
+          value: v,
+          detail: `momentum ${m.momentum.toFixed(2)}%/min${
+            m.momentumAcceleration !== null
+              ? m.momentumAcceleration > 0
+                ? ", accelerating"
+                : m.momentumAcceleration < 0
+                  ? ", decelerating"
+                  : ""
+              : ""
+          }`,
+        };
       })(),
     },
     {
@@ -359,6 +375,19 @@ function buildRedFlags(m: TokenMetrics): RedFlag[] {
     add("fresh_wallet_swarm", "Spam / fresh-wallet swarm", `${m.freshWalletPct.toFixed(0)}% of buyers are fresh wallets`, 15);
   if (m.devReputationScore !== null && m.devReputationScore < 0.25)
     add("bad_dev_history", "Poor developer history", "prior launches rugged or abandoned", 20);
+
+  // Exhaustion — the move already happened; buying here is chasing.
+  if (m.priceChange5mPct !== null && m.priceChange5mPct > 40)
+    add("vertical_candle", "Chasing a vertical move", `price +${m.priceChange5mPct.toFixed(0)}% in 5m — late entry risk`, 15);
+  if (m.priceChange1hPct !== null && m.priceChange1hPct > 200)
+    add("exhausted_move", "Move likely exhausted", `price +${m.priceChange1hPct.toFixed(0)}% in 1h — biggest move likely behind`, 15);
+  if (
+    m.momentumAcceleration !== null &&
+    m.momentumAcceleration < -1 &&
+    m.priceChange5mPct !== null &&
+    m.priceChange5mPct > 15
+  )
+    add("momentum_fading", "Momentum decelerating after a pump", `acceleration ${m.momentumAcceleration.toFixed(1)} after +${m.priceChange5mPct.toFixed(0)}%/5m`, 12);
 
   return flags;
 }
