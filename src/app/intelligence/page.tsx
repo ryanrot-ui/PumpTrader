@@ -40,6 +40,123 @@ interface TokenRow {
   } | null;
 }
 
+interface NarrativesResponse {
+  config: { xConfigured: boolean; watchlist: string[]; sources: string[] };
+  top: Array<{
+    term: string;
+    mentions: number;
+    totalMentions: number;
+    growthPct: number | null;
+    peaked: boolean;
+    sources: string[];
+    influencers: string[];
+    firstSeenAt: string;
+  }>;
+  fastestGrowing: Array<{ term: string; mentions: number; growthPct: number | null; sources: string[] }>;
+  influencerActivity: Array<{ handle: string; narratives: number }>;
+  recentMatches: Array<{
+    at: string;
+    mint: string;
+    symbol: string | null;
+    narrative: string;
+    matchPct: number;
+    scoreDelta: number;
+    peaked: boolean;
+    detail: string;
+  }>;
+}
+
+function TrendPanel() {
+  const { data } = usePoll<NarrativesResponse>("/api/narratives", 60_000);
+  if (!data) return null;
+  return (
+    <div className="grid lg:grid-cols-3 gap-4 mb-4">
+      <div className="card">
+        <div className="stat-label mb-1">Top trending narratives</div>
+        <p className="text-[10px] text-slate-600 mb-2">
+          Sources: {data.config.sources.join(" · ")}. Trend matches only nudge the narrative score
+          (bounded, peaked = penalty) — they never buy anything on their own.
+        </p>
+        {data.top.length === 0 ? (
+          <p className="text-sm text-slate-600">Builds up as the tracker refreshes (every 10 min).</p>
+        ) : (
+          <div className="space-y-1 max-h-64 overflow-y-auto">
+            {data.top.slice(0, 15).map((n) => (
+              <div key={n.term} className="flex items-center justify-between gap-2 text-xs">
+                <span className="text-slate-200 truncate" title={n.influencers.length ? `via ${n.influencers.join(", ")}` : undefined}>
+                  {n.term}
+                  {n.peaked && <span className="text-loss ml-1.5 text-[10px]">peaked</span>}
+                </span>
+                <span className="shrink-0 text-slate-500">
+                  ×{n.mentions}
+                  {n.growthPct != null && (
+                    <span className={n.growthPct > 0 ? "text-profit ml-1.5" : "text-slate-600 ml-1.5"}>
+                      {n.growthPct > 0 ? "+" : ""}{n.growthPct.toFixed(0)}%
+                    </span>
+                  )}
+                  <span className="text-slate-700 ml-1.5">{n.sources.join("+")}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="card">
+        <div className="stat-label mb-2">Fastest growing · influencer activity</div>
+        {data.fastestGrowing.length === 0 ? (
+          <p className="text-sm text-slate-600">No accelerating narratives right now.</p>
+        ) : (
+          <div className="space-y-1 mb-3">
+            {data.fastestGrowing.map((n) => (
+              <div key={n.term} className="flex items-center justify-between text-xs">
+                <span className="text-slate-200 truncate">{n.term}</span>
+                <span className="text-profit shrink-0">+{n.growthPct?.toFixed(0)}%</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="text-[10px] text-slate-500 mb-1">
+          Watchlist ({data.config.xConfigured ? "X live" : "X off — set TWITTER_BEARER_TOKEN"}):
+        </div>
+        <p className="text-[11px] text-slate-400 break-words">
+          {data.config.watchlist.map((h) => `@${h}`).join("  ")}
+        </p>
+        {data.influencerActivity.length > 0 && (
+          <div className="mt-2 space-y-0.5">
+            {data.influencerActivity.slice(0, 6).map((a) => (
+              <p key={a.handle} className="text-[11px] text-slate-500">
+                @{a.handle}: {a.narratives} active narrative(s)
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="card">
+        <div className="stat-label mb-2">Recent token ↔ narrative matches</div>
+        {data.recentMatches.length === 0 ? (
+          <p className="text-sm text-slate-600">
+            Appears when a scanned token matches an active narrative (semantic match ≥70%).
+          </p>
+        ) : (
+          <div className="space-y-1.5 max-h-64 overflow-y-auto">
+            {data.recentMatches.map((m) => (
+              <div key={`${m.mint}-${m.at}`} className="text-xs border-b border-surface-border/40 pb-1 last:border-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-slate-200">{m.symbol ?? shortMint(m.mint)}</span>
+                  <span className={m.peaked ? "text-loss" : "text-profit"}>
+                    “{m.narrative}” {m.matchPct}% · {m.scoreDelta >= 0 ? "+" : ""}{m.scoreDelta}
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-600 truncate" title={m.detail}>{m.detail}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function riskTone(v: number | null): string {
   if (v === null) return "text-slate-500";
   if (v <= 30) return "text-profit";
@@ -78,6 +195,9 @@ export default function IntelligencePage() {
         preceded winners in this bot&apos;s own history. Descriptive statistics — small
         samples prove nothing, and no signal here predicts profit.
       </p>
+
+      {/* Trending narratives (trend tracker) */}
+      <TrendPanel />
 
       {/* Signal performance (learning analytics) */}
       <div className="card mb-4">

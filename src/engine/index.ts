@@ -30,6 +30,7 @@ import { adjustSizeForConditions, checkPairHistory, checkRisk } from "./trading/
 import { evaluateExit } from "./trading/exitRules";
 import { trackExcursions } from "./trading/excursions";
 import { NarrativeEngine, entrySignalsPayload } from "./narrative";
+import { TrendTracker } from "./narrative/trends";
 import { evaluateNarrativeExit } from "./narrative/exit";
 import { DEFAULT_NARRATIVE_WEIGHTS } from "./narrative/types";
 import type { NarrativeReport } from "./narrative/types";
@@ -104,8 +105,10 @@ class TradingEngine {
   private conn = this.makeConnection();
 
   private config = new LiveConfig();
+  private trends = new TrendTracker();
   private narrative = new NarrativeEngine(
-    () => this.config.get().narrativeWeights ?? DEFAULT_NARRATIVE_WEIGHTS
+    () => this.config.get().narrativeWeights ?? DEFAULT_NARRATIVE_WEIGHTS,
+    () => this.trends.narratives
   );
   private lastNarrativeCheck = new Map<string, number>(); // positionId → ts
   private scanner: MigrationScanner;
@@ -215,8 +218,16 @@ class TradingEngine {
     // weights/shadow resolution (10 min). Both no-op while the DB is down.
     this.timers.push(setInterval(() => void this.computeRegime(), 5 * 60_000));
     this.timers.push(setInterval(() => void this.refreshLearningState(), 10 * 60_000));
+    // Narrative trend tracking (influencer watchlist / Reddit / DexScreener
+    // boosts) every 10 min; failures degrade to an empty trend list.
+    this.timers.push(
+      setInterval(() => {
+        if (dbResilience.healthy) void this.trends.refresh().catch(() => {});
+      }, 10 * 60_000)
+    );
     void this.computeRegime();
     void this.refreshLearningState();
+    if (dbResilience.healthy) void this.trends.refresh().catch(() => {});
     await this.stateTick();
     logger.info("engine", "engine running — scanning for Pump.fun migrations");
   }

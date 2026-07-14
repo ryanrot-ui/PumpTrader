@@ -409,6 +409,30 @@ model TradeReview {
   @@index([win])
 }
 
+// An emerging narrative/meme tracked across social sources: mention counts
+// per refresh window drive growth-rate and peak detection; matching new
+// tokens against these terms produces the trend-match narrative signal.
+model TrendingNarrative {
+  id         String   @id @default(cuid())
+  term       String   @unique // normalized lowercase term/phrase
+  display    String // original casing for the dashboard
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  mentions      Int     @default(0) // current window
+  prevMentions  Int     @default(0) // previous window (growth baseline)
+  totalMentions Int     @default(0)
+  engagement    Int     @default(0) // likes/upvotes/boosts accumulated
+  growthPct     Float?
+  declineStreak Int     @default(0) // consecutive shrinking windows
+  peaked        Boolean @default(false) // declining ≥2 windows
+  sources     String[] @default([]) // x | reddit | dexscreener
+  influencers String[] @default([]) // contributing watchlist handles
+  updatedAt DateTime @updatedAt
+
+  @@index([lastSeenAt])
+  @@index([peaked])
+}
+
 // Shadow strategy: hypothetical entries the CANDIDATE strategy (recommended
 // weights) would have taken but the live strategy did not. Resolved later by
 // replaying the token's recorded snapshots through the production exit

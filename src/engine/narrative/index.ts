@@ -8,6 +8,7 @@ import { collectXMentions } from "./providers/x";
 import { assessMemeQuality, memeAiEnabled } from "./providers/memeAI";
 import { computeMemeScore, computeNarrativeScore } from "./aggregate";
 import { assessRugRisk } from "./rugRisk";
+import { matchTokenToNarratives, trendScoreAdjustment, type NarrativeLite } from "./trends";
 import {
   DEFAULT_NARRATIVE_WEIGHTS,
   type MemeAssessment,
@@ -41,7 +42,11 @@ export class NarrativeEngine {
   private memeAiCache = new Map<string, MemeAssessment | null>();
   private inflight = new Map<string, Promise<NarrativeReport>>();
 
-  constructor(private getWeights: () => NarrativeWeights | null = () => null) {}
+  constructor(
+    private getWeights: () => NarrativeWeights | null = () => null,
+    /** active trending narratives (from the TrendTracker); [] = trends off */
+    private getTrends: () => NarrativeLite[] = () => []
+  ) {}
 
   /** Cached evaluation; safe to call on every scanner tick. */
   async evaluate(tokenId: string, metrics: TokenMetrics): Promise<NarrativeReport> {
@@ -121,6 +126,19 @@ export class NarrativeEngine {
     const meme = computeMemeScore(signals, memeAssessment);
     const rug = assessRugRisk(metrics);
 
+    // Trend intelligence: does this token match an emerging narrative? A
+    // fresh, growing, cross-platform match earns a bounded bonus (max +17);
+    // a match whose trend already peaked is a PENALTY. Never a buy signal
+    // on its own — it only shifts the narrative score, which the trade
+    // decision treats as one gated input among many.
+    const match = matchTokenToNarratives(
+      metrics.name ?? dex?.tokenName ?? null,
+      metrics.symbol,
+      this.getTrends()
+    );
+    const trendAdj = trendScoreAdjustment(match);
+    const narrativeScore = Math.max(0, Math.min(100, narrative.score + trendAdj.delta));
+
     const bullishFactors = narrative.factors
       .filter((f) => f.value >= 0.65)
       .map((f) => `${f.name}: ${f.detail}`);
@@ -128,24 +146,28 @@ export class NarrativeEngine {
       ...narrative.factors.filter((f) => f.value <= 0.35).map((f) => `${f.name}: ${f.detail}`),
       ...rug.factors.filter((f) => f.value >= 0.75).map((f) => `rug risk — ${f.name}: ${f.detail}`),
     ];
+    if (match && trendAdj.delta > 0) bullishFactors.unshift(`narrative match: ${trendAdj.detail}`);
+    if (match && trendAdj.delta < 0) bearishFactors.unshift(`narrative peaked: ${trendAdj.detail}`);
     if ((signals.boostsActive ?? 0) > 0) {
       bearishFactors.push(`paid promotion: ${signals.boostsActive} DexScreener boost(s) active`);
     }
 
     const report: NarrativeReport = {
       memeScore: meme.score,
-      narrativeScore: narrative.score,
+      narrativeScore,
       rugRiskScore: rug.score,
       sentiment: signals.redditSentiment,
       bullishFactors,
       bearishFactors,
       memeExplanation: meme.explanation,
-      narrativeExplanation: narrative.explanation,
+      narrativeExplanation:
+        narrative.explanation + (match ? ` Trend: ${trendAdj.detail} (${trendAdj.delta >= 0 ? "+" : ""}${trendAdj.delta}).` : ""),
       rugExplanation: rug.explanation,
       narrativeFactors: narrative.factors,
       rugFactors: rug.factors,
       signals,
       memeAssessment,
+      trendMatch: match ? { ...match, scoreDelta: trendAdj.delta, detail: trendAdj.detail } : null,
     };
 
     this.cache.set(metrics.mint, { at: Date.now(), report });
@@ -184,6 +206,7 @@ export class NarrativeEngine {
               narrativeFactors: r.narrativeFactors,
               rugFactors: r.rugFactors,
               memeAssessment: r.memeAssessment,
+              trendMatch: r.trendMatch,
               missingSources: r.signals.missingSources,
             })
           ),
@@ -222,5 +245,8 @@ export function entrySignalsPayload(scannerScore: number, r: NarrativeReport) {
     hasTelegram: r.signals.hasTelegram,
     bullishFactors: r.bullishFactors,
     bearishFactors: r.bearishFactors,
+    // per-trade narrative explanation: which narrative matched, why, who
+    // drove it, and whether it was growing or already fading at entry
+    trendMatch: r.trendMatch,
   };
 }

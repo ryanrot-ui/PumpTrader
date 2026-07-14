@@ -68,6 +68,18 @@ export interface NarrativeReport {
   rugFactors: FactorReading[];
   signals: SocialSignals;
   memeAssessment: MemeAssessment | null;
+
+  /** Active-narrative trend match (null = no narrative matched). */
+  trendMatch: {
+    narrative: string;
+    matchPct: number;
+    trendGrowthPct: number | null;
+    peaked: boolean;
+    influencers: string[];
+    sources: string[];
+    scoreDelta: number; // bounded adjustment applied to narrativeScore
+    detail: string;
+  } | null;
 }
 
 /** Configurable weights for the narrative score components (sum need not be 1). */
