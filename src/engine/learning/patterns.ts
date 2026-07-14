@@ -268,7 +268,9 @@ export function detectPatterns(trades: ClosedTrade[], settings?: Partial<BotSett
     }
   }
 
-  recommendations.sort((a, b) => b.evidence.expectedWinRateDeltaPct - a.evidence.expectedWinRateDeltaPct);
+  // Rank by PROFIT impact (SOL the filtered trades lost), not win-rate
+  // delta: the objective is maximum expectancy, not maximum win rate.
+  recommendations.sort((a, b) => a.evidence.filteredPnlSol - b.evidence.filteredPnlSol);
 
   // ── Strategy confidence: sample size + edge + consistency ────────────────
   const n = trades.length;

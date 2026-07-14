@@ -156,6 +156,11 @@ const BEHAVIOUR_TOGGLES: Array<{ key: string; label: string; hint: string }> = [
     label: "Auto-rebalance score weights",
     hint: "apply the optimizer's data-driven weight recommendation automatically with each strategy report",
   },
+  {
+    key: "adaptiveThreshold",
+    label: "Market-adaptive threshold",
+    hint: "shift the confidence threshold up to ±7 points with market quality: good markets allow more trades, poor markets demand more",
+  },
 ];
 
 const NARRATIVE_EXIT_MODES = [

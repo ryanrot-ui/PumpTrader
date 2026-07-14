@@ -63,6 +63,29 @@ interface Analytics {
   } | null;
   minTradesForOptimization: number;
   reports: Array<{ id: string; at: string; mode: string; tradesAnalyzed: number; trigger: string; weightsApplied: boolean }>;
+  missed: {
+    tracked: number;
+    active: number;
+    ruggedPct: number | null;
+    filterEffectiveness: Array<{
+      rule: string;
+      rejected: number;
+      saved: number;
+      missedWinners: number;
+      accuracyPct: number;
+      missedPnlPct: number;
+    }>;
+    topMissed: Array<{
+      mint: string;
+      symbol: string | null;
+      rejectedAt: string;
+      score: number | null;
+      rejectionReasons: string[];
+      hardFailRules: string[];
+      maxGainPct: number | null;
+      rugged: boolean | null;
+    }>;
+  };
 }
 
 interface BacktestResponse {
@@ -178,6 +201,68 @@ export default function AnalyticsPage() {
           <div className="grid md:grid-cols-2 gap-4 mb-4">
             <ReasonTable title="Top reasons trades won" reasons={s.topWinReasons} tone="profit" />
             <ReasonTable title="Top reasons trades lost" reasons={s.topLossReasons} tone="loss" />
+          </div>
+
+          {/* Missed opportunities: what we refused and what it did next */}
+          <div className="grid lg:grid-cols-2 gap-4 mb-4">
+            <div className="card">
+              <div className="stat-label mb-1">Filter effectiveness — rugs avoided vs winners missed</div>
+              <p className="text-[10px] text-slate-600 mb-2">
+                Every rejected token is followed for 24h ({data.missed.tracked} graded, {data.missed.active} being tracked
+                {data.missed.ruggedPct != null ? `, ${data.missed.ruggedPct.toFixed(0)}% of rejections rugged` : ""}).
+                Accuracy = rejections that did NOT become +50% winners.
+              </p>
+              {data.missed.filterEffectiveness.length === 0 ? (
+                <p className="text-sm text-slate-600">Grades appear 24h after the first rejections are tracked.</p>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-slate-500 border-b border-surface-border">
+                      <th className="pb-1 pr-2 font-normal">Filter</th>
+                      <th className="pb-1 pr-2 font-normal text-right">Rejected</th>
+                      <th className="pb-1 pr-2 font-normal text-right">Saved</th>
+                      <th className="pb-1 pr-2 font-normal text-right">Missed W</th>
+                      <th className="pb-1 font-normal text-right">Accuracy</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.missed.filterEffectiveness.map((f) => (
+                      <tr key={f.rule} className="border-b border-surface-border/40">
+                        <td className="py-1 pr-2 text-slate-300">{f.rule}</td>
+                        <td className="py-1 pr-2 text-right text-slate-400">{f.rejected}</td>
+                        <td className="py-1 pr-2 text-right text-profit">{f.saved}</td>
+                        <td className="py-1 pr-2 text-right text-loss">{f.missedWinners}</td>
+                        <td className={`py-1 text-right font-mono ${f.accuracyPct >= 70 ? "text-profit" : f.accuracyPct >= 50 ? "text-warn" : "text-loss"}`}>
+                          {f.accuracyPct.toFixed(1)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="card">
+              <div className="stat-label mb-2">Top missed opportunities — and why we rejected them</div>
+              {data.missed.topMissed.length === 0 ? (
+                <p className="text-sm text-slate-600">
+                  No rejected token has peaked ≥ +50% within 24h yet — the filters are earning their keep.
+                </p>
+              ) : (
+                <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                  {data.missed.topMissed.map((m) => (
+                    <div key={m.mint} className="border-b border-surface-border/40 pb-1 last:border-0 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-slate-200">{m.symbol ?? `${m.mint.slice(0, 8)}…`}</span>
+                        <span className="text-profit shrink-0">peaked +{m.maxGainPct?.toFixed(0)}%</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 truncate" title={m.rejectionReasons.join("; ")}>
+                        score {m.score ?? "—"} · rejected by: {m.hardFailRules.join(", ") || "score below threshold"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Weight optimizer */}

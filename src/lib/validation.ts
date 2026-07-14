@@ -61,6 +61,7 @@ export const settingsSchema = z.object({
   maxEntryPriceChange1hPct: z.number().min(1).max(100_000).nullable(),
   requireRisingMomentum: z.boolean(),
   minConfirmations: z.number().int().min(0).max(6),
+  adaptiveThreshold: z.boolean(),
 
   // Adaptive exits
   letWinnersRun: z.boolean(),

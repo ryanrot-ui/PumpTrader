@@ -45,6 +45,11 @@ export interface EngineHealth {
   marketRegimeDetail?: string | null;
   /** true while a candidate (shadow) strategy is being evaluated. */
   shadowStrategyActive?: boolean;
+  /** market-quality-adaptive threshold shift currently applied. */
+  adaptiveThresholdDelta?: number;
+  adaptiveThresholdReason?: string;
+  /** measured trade-frequency health (healthy | over_selective | …). */
+  frequencyStatus?: string | null;
   // ── RPC endpoint health (per-endpoint scoring + failover history) ────────
   rpcEndpoints?: Array<{
     url: string;

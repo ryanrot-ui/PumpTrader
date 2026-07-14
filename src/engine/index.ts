@@ -22,6 +22,13 @@ import { generateStrategyReport } from "./learning/reporter";
 import { generateTradeReview, type ReviewInput } from "./learning/review";
 import { buildCalibration, probabilityOfSuccess, type Calibration } from "./learning/featureValidation";
 import { preTradeReview, type LessonStat, type PreTradeReview } from "./learning/preTrade";
+import {
+  assessFrequencyHealth,
+  dynamicThresholdDelta,
+  investigateBlockers,
+  type FrequencyHealth,
+} from "./learning/frequency";
+import { monitorMissedOpportunities, recordMissedOpportunity } from "./learning/missed";
 import type { ClosedTrade } from "./learning/tradeStats";
 import { classifyRegime, type RegimeResult } from "./learning/regime";
 import { recordShadowTrade, resolveShadowTrades } from "./learning/shadow";
@@ -132,6 +139,11 @@ class TradingEngine {
   private regime: RegimeResult | null = null; // current market regime
   // Everything already learned, consulted before EVERY buy decision
   private preTradeKnowledge: { trades: ClosedTrade[]; lessons: LessonStat[] } | null = null;
+  // Profit–frequency balance: measured trade-frequency health and the
+  // market-quality-adaptive threshold shift derived from it + the regime
+  private freqHealth: FrequencyHealth | null = null;
+  private thresholdShift: { delta: number; reason: string } = { delta: 0, reason: "no regime data yet" };
+  private lastFreqStatus: string | null = null;
 
   constructor() {
     this.scanner = new MigrationScanner(
@@ -228,6 +240,13 @@ class TradingEngine {
       setInterval(() => {
         if (dbResilience.healthy) void this.trends.refresh().catch(() => {});
       }, 10 * 60_000)
+    );
+    // Missed-opportunity monitor: follow every rejected token for 24h so
+    // each filter can be graded on rugs avoided vs winners missed.
+    this.timers.push(
+      setInterval(() => {
+        if (dbResilience.healthy) void monitorMissedOpportunities().catch(() => {});
+      }, 5 * 60_000)
     );
     void this.computeRegime();
     void this.refreshLearningState();
@@ -405,6 +424,9 @@ class TradingEngine {
         marketRegime: this.regime?.regime ?? null,
         marketRegimeDetail: this.regime?.detail ?? null,
         shadowStrategyActive: this.candidateWeights != null,
+        adaptiveThresholdDelta: this.thresholdShift.delta,
+        adaptiveThresholdReason: this.thresholdShift.reason,
+        frequencyStatus: this.freqHealth?.status ?? null,
         ...this.rpcHealth.snapshot(rpcUrl),
         ...dbResilience.snapshot(),
       },
@@ -591,7 +613,7 @@ class TradingEngine {
         this.watchlist.delete(t.mint);
         forgetToken(t.mint);
         this.narrative.forget(t.mint);
-        await prisma.detectedToken.update({
+        const expired = await prisma.detectedToken.update({
           where: { id: t.tokenId },
           data: {
             verdict: "IGNORED",
@@ -600,6 +622,21 @@ class TradingEngine {
             ],
           },
         });
+        // A token that never qualified is a rejection too — track its next
+        // 24h so "score below threshold" gets graded like every other gate.
+        void getPairSnapshot(t.mint).then((snap) =>
+          recordMissedOpportunity({
+            mint: t.mint,
+            tokenId: t.tokenId,
+            symbol: expired.symbol,
+            verdict: "IGNORED",
+            score: expired.score,
+            rejectionReasons: ["watch window expired without qualifying"],
+            hardFailRules: [],
+            priceUsd: snap?.priceUsd ?? null,
+            entryContext: { liquidityUsd: snap?.liquidityUsd ?? null, regime: this.regime?.regime ?? null },
+          })
+        );
         return;
       }
 
@@ -735,7 +772,25 @@ class TradingEngine {
         logger.warn("scoring", `narrative evaluation failed for ${t.mint.slice(0, 8)}…: ${(e as Error).message}`);
       }
 
-      const decision = evaluateBuyRules(metrics, score, settings, narrativeReport);
+      // Market-quality-adaptive threshold: good markets allow more trades,
+      // poor markets demand more. Bounded ±7 points; disable via settings.
+      const shift = settings.adaptiveThreshold ? this.thresholdShift : { delta: 0, reason: "adaptive threshold disabled" };
+      const effSettings =
+        shift.delta !== 0
+          ? {
+              ...settings,
+              confidenceThreshold: Math.max(50, Math.min(95, settings.confidenceThreshold + shift.delta)),
+            }
+          : settings;
+
+      const decision = evaluateBuyRules(metrics, score, effSettings, narrativeReport);
+      decision.trace.push({
+        rule: "market-adaptive threshold",
+        layer: "opportunity",
+        hard: false,
+        passed: true,
+        detail: `base ${settings.confidenceThreshold}${shift.delta ? ` ${shift.delta > 0 ? "+" : ""}${shift.delta} → effective ${effSettings.confidenceThreshold}` : " (no shift)"} — ${shift.reason}`,
+      });
 
       // Confidence engine: the calibrated probability that a trade scored
       // like this one is profitable, from measured historical win rates.
@@ -766,7 +821,7 @@ class TradingEngine {
         candidateScore = scoreToken(metrics, this.candidateWeights).total;
         if (
           decision.action === "watch" &&
-          candidateScore >= settings.confidenceThreshold &&
+          candidateScore >= effSettings.confidenceThreshold &&
           metrics.priceUsd != null
         ) {
           void recordShadowTrade({
@@ -806,6 +861,31 @@ class TradingEngine {
           this.rejectedOnce.add(t.mint);
           await this.bumpDaily({ rejected: 1 });
           if (this.rejectedOnce.size > 10_000) this.rejectedOnce.clear();
+          // Learn from what we refuse: track this token's next 24h so the
+          // gates that rejected it can be graded on the outcome.
+          void recordMissedOpportunity({
+            mint: t.mint,
+            tokenId: t.tokenId,
+            symbol: metrics.symbol,
+            verdict: "REJECTED",
+            score: score.total,
+            rejectionReasons: decision.reasons,
+            hardFailRules: decision.trace.filter((r) => r.hard && !r.passed).map((r) => r.rule),
+            priceUsd: metrics.priceUsd,
+            entryContext: {
+              liquiditySol: metrics.liquiditySol,
+              marketCapUsd: metrics.marketCapUsd,
+              holderCount: metrics.holderCount,
+              topHolderPct: metrics.topHolderPct,
+              devWalletPct: metrics.devWalletPct,
+              volume5mUsd: metrics.volume5mUsd,
+              momentum: metrics.momentum,
+              momentumAcceleration: metrics.momentumAcceleration,
+              buySellRatio: metrics.buySellRatio,
+              narrativeScore: narrativeReport?.narrativeScore ?? null,
+              regime: this.regime?.regime ?? null,
+            },
+          });
         }
         logger.debug("scoring", `${verdict.toLowerCase()} ${t.mint.slice(0, 8)}… (${score.total})`, {
           reasons: decision.reasons,
@@ -1455,6 +1535,28 @@ class TradingEngine {
         })),
       };
 
+      // Profit–frequency balance: never optimize for win rate alone. If
+      // trade frequency dropped AND daily profit dropped, automatically
+      // investigate which gates are blocking and say so loudly.
+      this.freqHealth = assessFrequencyHealth(trades);
+      this.thresholdShift = dynamicThresholdDelta(this.regime?.regime ?? null, this.freqHealth);
+      if (this.freqHealth.status !== this.lastFreqStatus) {
+        this.lastFreqStatus = this.freqHealth.status;
+        if (this.freqHealth.status === "over_selective" || this.freqHealth.status === "over_trading") {
+          const blockers = await investigateBlockers().catch(() => []);
+          logger.warn(
+            "engine",
+            `frequency check: ${this.freqHealth.status.replace(/_/g, " ")} — ${this.freqHealth.detail}` +
+              (blockers.length
+                ? ` | top blocking gates (7d): ${blockers.slice(0, 4).map((b) => `${b.rule} ${b.count}×`).join(", ")}`
+                : ""),
+            { frequency: JSON.parse(JSON.stringify(this.freqHealth)), blockers }
+          );
+        } else if (this.freqHealth.status === "healthy") {
+          logger.info("engine", `frequency check: healthy — ${this.freqHealth.detail}`);
+        }
+      }
+
       const reports = await prisma.strategyReport.findMany({
         orderBy: { at: "desc" },
         take: 5,
@@ -1517,6 +1619,8 @@ class TradingEngine {
       if (prev !== this.regime.regime) {
         logger.info("engine", `market regime: ${prev ?? "unknown"} → ${this.regime.regime} (${this.regime.detail})`);
       }
+      // Market-quality-adaptive threshold shift (bounded ±7, fully traced)
+      this.thresholdShift = dynamicThresholdDelta(this.regime.regime, this.freqHealth);
     } catch (e) {
       if (isTransientDbError(e)) dbResilience.recordFailure(e);
     }

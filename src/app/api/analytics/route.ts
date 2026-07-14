@@ -8,6 +8,7 @@ import { loadClosedTrades } from "@/engine/learning/loadTrades";
 import { computeTradeStats } from "@/engine/learning/tradeStats";
 import { optimizeWeights, MIN_TRADES_FOR_OPTIMIZATION } from "@/engine/learning/optimizer";
 import { deriveAdjustments, generateStrategyReport } from "@/engine/learning/reporter";
+import { computeFilterEffectiveness } from "@/engine/learning/missed";
 
 /**
  * Learning analytics.
@@ -32,11 +33,27 @@ async function handleGet(req: Request) {
   const stats = computeTradeStats(trades);
   const recommendation = optimizeWeights(trades);
   const adjustments = deriveAdjustments(stats);
-  const reports = await prisma.strategyReport.findMany({
-    orderBy: { at: "desc" },
-    take: 5,
-    select: { id: true, at: true, mode: true, tradesAnalyzed: true, trigger: true, weightsApplied: true },
-  });
+  const [reports, missedDone, missedActive] = await Promise.all([
+    prisma.strategyReport.findMany({
+      orderBy: { at: "desc" },
+      take: 5,
+      select: { id: true, at: true, mode: true, tradesAnalyzed: true, trigger: true, weightsApplied: true },
+    }),
+    prisma.missedOpportunity.findMany({
+      where: { doneAt: { not: null } },
+      select: { mint: true, symbol: true, rejectedAt: true, score: true, rejectionReasons: true, hardFailRules: true, maxGainPct: true, maxLossPct: true, rugged: true },
+      orderBy: { rejectedAt: "desc" },
+      take: 2000,
+    }),
+    prisma.missedOpportunity.count({ where: { doneAt: null } }),
+  ]);
+
+  // Phase 2: grade every filter on rugs avoided vs winners missed
+  const filterEffectiveness = computeFilterEffectiveness(missedDone);
+  const topMissed = [...missedDone]
+    .filter((m) => (m.maxGainPct ?? 0) >= 50 && m.rugged !== true)
+    .sort((a, b) => (b.maxGainPct ?? 0) - (a.maxGainPct ?? 0))
+    .slice(0, 10);
 
   return NextResponse.json({
     mode,
@@ -45,6 +62,15 @@ async function handleGet(req: Request) {
     recommendation,
     minTradesForOptimization: MIN_TRADES_FOR_OPTIMIZATION,
     reports,
+    missed: {
+      tracked: missedDone.length,
+      active: missedActive,
+      ruggedPct: missedDone.length
+        ? (missedDone.filter((m) => m.rugged === true).length / missedDone.length) * 100
+        : null,
+      filterEffectiveness,
+      topMissed,
+    },
   });
 }
 

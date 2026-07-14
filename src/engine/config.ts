@@ -41,6 +41,7 @@ export const DEFAULT_SETTINGS: BotSettings = settingsSchema.parse({
   maxEntryPriceChange1hPct: 175,
   requireRisingMomentum: false,
   minConfirmations: 4,
+  adaptiveThreshold: true,
   letWinnersRun: true,
   adaptiveTrailing: true,
   cutWeakAfterMinutes: 4,

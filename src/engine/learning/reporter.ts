@@ -4,6 +4,7 @@ import { publish, CHANNELS } from "@/lib/redis";
 import { logger } from "../logging/logger";
 import { computeTradeStats, type BucketStat, type TradeStats } from "./tradeStats";
 import { optimizeWeights, type WeightRecommendation } from "./optimizer";
+import { assessFrequencyHealth, investigateBlockers } from "./frequency";
 import { loadClosedTrades } from "./loadTrades";
 
 /**
@@ -113,6 +114,22 @@ export async function generateStrategyReport(opts: {
   const stats = computeTradeStats(trades);
   const recommendation = optimizeWeights(trades);
   const adjustments = deriveAdjustments(stats);
+
+  // Profit–frequency balance: win rate alone is never the objective. Flag
+  // over-selectivity/over-trading with the measured numbers, and when
+  // frequency dropped, name the gates responsible.
+  const freq = assessFrequencyHealth(trades);
+  if (freq.status === "over_selective" || freq.status === "over_trading") {
+    const blockers = await investigateBlockers().catch(() => []);
+    adjustments.unshift(
+      `${freq.status.replace(/_/g, " ").toUpperCase()}: ${freq.detail}` +
+        (blockers.length
+          ? ` — top blocking gates (7d): ${blockers.slice(0, 3).map((b) => `${b.rule} (${b.count}×)`).join(", ")}`
+          : "")
+    );
+  } else if (freq.status === "healthy") {
+    adjustments.push(`Frequency healthy: ${freq.detail}`);
+  }
 
   let weightsApplied = false;
   if (opts.autoApplyWeights && recommendation) {

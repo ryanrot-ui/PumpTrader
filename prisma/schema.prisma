@@ -88,6 +88,10 @@ model Settings {
   // (liquidity/spread, rising volume, trend alignment, clean structure,
   // real momentum, token risk) must agree before buying. 0 = disabled.
   minConfirmations Int @default(4)
+  // Market-quality-adaptive threshold: shift confidenceThreshold by up to
+  // ±7 points with the market regime (good market → more trades, poor
+  // market → more selective). The shift is bounded and fully traced.
+  adaptiveThreshold Boolean @default(true)
 
   // Adaptive exits
   letWinnersRun       Boolean @default(true) // defer TP while buy pressure is strong; trail protects
@@ -407,6 +411,38 @@ model TradeReview {
 
   @@index([at])
   @@index([win])
+}
+
+// What we DIDN'T buy and what happened next: every rejected token is
+// monitored for 24h at checkpoints (5m/15m/30m/1h/4h/24h). This dataset
+// grades every filter — how many rugs it saved us from vs how many winners
+// it cost — so filters earn their strictness with evidence.
+model MissedOpportunity {
+  id      String  @id @default(cuid())
+  mint    String  @unique
+  tokenId String?
+  symbol  String?
+  rejectedAt DateTime @default(now())
+  verdict    String   @default("REJECTED")
+  score      Int?
+  rejectionReasons String[] @default([])
+  // which hard gates failed (the "filters" Phase 2 grades)
+  hardFailRules String[] @default([])
+  // liquidity/mcap/holders/topHolder/dev/volume/momentum/social at rejection
+  entryContext Json?
+  priceAtRejection Float?
+  // {"5m":{high,low,maxGainPct,maxLossPct},"15m":{...},...}
+  checkpoints Json?
+  highestPriceUsd Float?
+  lowestPriceUsd  Float?
+  maxGainPct Float?
+  maxLossPct Float?
+  rugged     Boolean?
+  doneAt     DateTime? // 24h monitoring complete
+
+  @@index([rejectedAt])
+  @@index([doneAt])
+  @@index([maxGainPct])
 }
 
 // An emerging narrative/meme tracked across social sources: mention counts
