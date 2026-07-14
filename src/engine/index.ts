@@ -21,6 +21,8 @@ import { RpcHealthTracker } from "./rpc/health";
 import { generateStrategyReport } from "./learning/reporter";
 import { generateTradeReview, type ReviewInput } from "./learning/review";
 import { buildCalibration, probabilityOfSuccess, type Calibration } from "./learning/featureValidation";
+import { preTradeReview, type LessonStat, type PreTradeReview } from "./learning/preTrade";
+import type { ClosedTrade } from "./learning/tradeStats";
 import { classifyRegime, type RegimeResult } from "./learning/regime";
 import { recordShadowTrade, resolveShadowTrades } from "./learning/shadow";
 import { loadClosedTrades } from "./learning/loadTrades";
@@ -128,6 +130,8 @@ class TradingEngine {
   private calibration: Calibration | null = null; // P(success) by score bucket
   private candidateWeights: ScoringWeights | null = null; // shadow strategy
   private regime: RegimeResult | null = null; // current market regime
+  // Everything already learned, consulted before EVERY buy decision
+  private preTradeKnowledge: { trades: ClosedTrade[]; lessons: LessonStat[] } | null = null;
 
   constructor() {
     this.scanner = new MigrationScanner(
@@ -604,6 +608,39 @@ class TradingEngine {
       const metrics = await collectMetrics(this.conn, t.mint, t.migratedAt);
       const weights = settings.scoringWeights ?? DEFAULT_WEIGHTS;
       const score = scoreToken(metrics, weights);
+
+      // Pre-trade learning review: consult everything already learned —
+      // the lessons database and a similarity search over past trades —
+      // and apply a BOUNDED adjustment before any decision is made. Every
+      // persisted score already includes it, so the dashboard, the decision
+      // trace, and the executed trade all tell the same story.
+      const learning = this.preTradeKnowledge
+        ? preTradeReview(
+            {
+              scannerScore: score.total,
+              narrativeScore: null, // narrative runs later; its own gates still apply
+              liquiditySol: metrics.liquiditySol,
+              marketCapUsd: metrics.marketCapUsd,
+              volume5mUsd: metrics.volume5mUsd,
+              buySellRatio: metrics.buySellRatio,
+              momentum: metrics.momentum,
+              momentumAcceleration: metrics.momentumAcceleration,
+              volatility5m: metrics.volatility5m,
+              estSlippagePctFor1Sol: metrics.estSlippagePctFor1Sol,
+              holderCount: metrics.holderCount,
+              tokenAgeMin: metrics.ageSinceMigrationSec / 60,
+              priceChange5mPct: metrics.priceChange5mPct,
+              priceChange1hPct: metrics.priceChange1hPct,
+              regime: this.regime?.regime ?? null,
+            },
+            this.preTradeKnowledge.trades,
+            this.preTradeKnowledge.lessons
+          )
+        : null;
+      if (learning && learning.scoreDelta !== 0) {
+        score.total = Math.max(0, Math.min(100, score.total + learning.scoreDelta));
+        score.explanation += ` Learning review applied ${learning.scoreDelta >= 0 ? "+" : ""}${learning.scoreDelta} (${learning.similarity.verdict.replace(/_/g, " ")}).`;
+      }
       const scoredMs = Date.now() - evalStartedAt;
 
       // Sanitize numerics before persisting: a NaN/Infinity from upstream
@@ -713,6 +750,13 @@ class TradingEngine {
           ? `${prob.pct}% (${prob.pct >= 60 ? "high" : prob.pct >= 45 ? "medium" : "low"} confidence) — ${prob.basis}`
           : "unrated — needs ≥20 closed trades to calibrate",
       });
+      decision.trace.push({
+        rule: "learning review",
+        layer: "opportunity",
+        hard: false,
+        passed: (learning?.scoreDelta ?? 0) >= 0,
+        detail: learning?.summary ?? "no learning data yet — every lesson starts with the first closed trades",
+      });
 
       // Shadow strategy: score the same opportunity under the candidate
       // weights. Divergent entries (candidate buys, live watches) become
@@ -777,7 +821,7 @@ class TradingEngine {
         logger.info("risk", `read-only mode: would have bought ${t.mint.slice(0, 8)}… (score ${score.total})`);
         return;
       }
-      await this.tryBuy(t, metrics, score, decision.reasons, narrativeReport, scoredMs);
+      await this.tryBuy(t, metrics, score, decision.reasons, decision.warnings, narrativeReport, scoredMs, learning);
     } catch (e) {
       const err = e as Error & { code?: string; meta?: unknown };
       // Database dropped mid-write: open the circuit (one structured status
@@ -820,22 +864,28 @@ class TradingEngine {
     metrics: TokenMetrics,
     score: ScoreResult,
     reasons: string[],
+    risks: string[],
     narrativeReport: NarrativeReport | null,
-    scoredMs: number
+    scoredMs: number,
+    learning: PreTradeReview | null
   ): Promise<void> {
     const settings = this.config.get();
     const priceUsd = metrics.priceUsd;
     const symbol = metrics.symbol;
     const entryReason = `score ${score.total}: ${reasons.join("; ")}`;
 
-    // Confidence engine: displayed/logged before every buy.
+    // Self-explanation, recorded before every trade: score, historical
+    // similarity, confidence, top reasons, top risks, lessons applied.
     const prob = this.calibration ? probabilityOfSuccess(this.calibration, score.total) : null;
-    if (prob) {
-      logger.info(
-        "scoring",
-        `confidence for ${t.mint.slice(0, 8)}…: probability of success ${prob.pct}% (${prob.pct >= 60 ? "HIGH" : prob.pct >= 45 ? "MEDIUM" : "LOW"}) — top reasons: ${reasons.slice(0, 3).join("; ")}`
-      );
-    }
+    logger.info(
+      "scoring",
+      `pre-trade review ${t.mint.slice(0, 8)}…: score ${score.total}` +
+        (prob ? ` · P(success) ${prob.pct}% (${prob.pct >= 60 ? "HIGH" : prob.pct >= 45 ? "MEDIUM" : "LOW"})` : "") +
+        (learning ? ` · ${learning.summary}` : " · no learning history yet") +
+        ` · reasons: ${reasons.slice(0, 3).join("; ")}` +
+        (risks.length ? ` · risks: ${risks.slice(0, 3).join("; ")}` : ""),
+      learning ? { learning: JSON.parse(JSON.stringify(learning)) } : undefined
+    );
 
     // Entry snapshot for the learning analytics: per-metric scoring values,
     // the market context the trade was taken in, and full timing telemetry.
@@ -846,6 +896,19 @@ class TradingEngine {
         : { scannerScore: score.total }),
       candidateScore: this.candidateWeights ? scoreToken(metrics, this.candidateWeights).total : null,
       successProbabilityPct: prob?.pct ?? null,
+      // full pre-trade self-explanation, stored on the position
+      learningReview: learning
+        ? JSON.parse(
+            JSON.stringify({
+              scoreDelta: learning.scoreDelta,
+              sizeMultiplier: learning.sizeMultiplier,
+              similarity: learning.similarity,
+              lessonsApplied: learning.lessonsApplied,
+            })
+          )
+        : null,
+      topReasons: reasons.slice(0, 3),
+      topRisks: risks.slice(0, 3),
       metrics: Object.fromEntries(score.metrics.map((m) => [m.metric, m.value])),
       context: {
         marketCapUsd: metrics.marketCapUsd,
@@ -909,6 +972,15 @@ class TradingEngine {
         );
       }
       risk.sizeSol = sized.sizeSol;
+      // Unknown pattern (no sufficiently similar history) → half size. No
+      // data is never treated as good news.
+      if (learning && learning.sizeMultiplier < 1) {
+        risk.sizeSol *= learning.sizeMultiplier;
+        logger.info(
+          "risk",
+          `unknown setup for ${t.mint.slice(0, 8)}… — trading ${learning.sizeMultiplier * 100}% size (${risk.sizeSol.toFixed(4)} SOL)`
+        );
+      }
 
       // Live-mode pre-trade validation: wallet must actually hold enough SOL
       // (trade size + fee/rent headroom).
@@ -1358,6 +1430,30 @@ class TradingEngine {
     try {
       const trades = await loadClosedTrades({ mode: "all", limit: 1000 });
       this.calibration = buildCalibration(trades);
+
+      // Lessons for the pre-trade review: win rate per condition tag.
+      const reviews = await prisma.tradeReview.findMany({
+        select: { tags: true, win: true },
+        orderBy: { at: "desc" },
+        take: 2000,
+      });
+      const tagMap = new Map<string, { n: number; w: number }>();
+      for (const r of reviews) {
+        for (const tag of r.tags) {
+          const cur = tagMap.get(tag) ?? { n: 0, w: 0 };
+          cur.n++;
+          if (r.win) cur.w++;
+          tagMap.set(tag, cur);
+        }
+      }
+      this.preTradeKnowledge = {
+        trades,
+        lessons: [...tagMap.entries()].map(([tag, v]) => ({
+          tag,
+          trades: v.n,
+          winRate: (v.w / v.n) * 100,
+        })),
+      };
 
       const reports = await prisma.strategyReport.findMany({
         orderBy: { at: "desc" },
