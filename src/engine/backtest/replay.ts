@@ -211,8 +211,56 @@ export function simulateToken(series: TokenSeries, s: BotSettings): ClosedTrade 
     maxUnrealizedPnlPct: maxUnrealized,
     maxDrawdownPct: maxDrawdown,
     entryMetrics: null,
+    entryContext: { buySellRatio: entry.buySellRatio, volume5mUsd: entry.volume5mUsd },
     paper: true,
   };
+}
+
+/**
+ * Backtest-first for parameter changes: replay the same recorded history
+ * under the CURRENT settings and under the PROPOSED settings, and report
+ * both so a change is only deployed when it actually improves performance.
+ */
+export function compareSettings(
+  series: TokenSeries[],
+  current: BotSettings,
+  proposed: BotSettings
+): { current: BacktestResult; proposed: BacktestResult; improves: boolean; verdict: string } {
+  const run = (name: string, label: string, settings: BotSettings): BacktestResult => {
+    const trades = series
+      .map((t) => simulateToken(t, settings))
+      .filter((t): t is ClosedTrade => t !== null);
+    const stats = computeTradeStats(trades);
+    const invested = trades.reduce((a, t) => a + t.entrySol, 0);
+    return {
+      preset: name,
+      label,
+      tokensConsidered: series.length,
+      trades: stats.trades,
+      winRate: stats.winRate,
+      roiPct: invested > 0 ? (stats.totalPnlSol / invested) * 100 : null,
+      profitFactor: stats.profitFactor,
+      expectancyPct: stats.expectancyPct,
+      maxDrawdownSol: stats.maxDrawdownSol,
+      avgHoldMinutes: stats.avgHoldMinutes,
+      totalPnlSol: stats.totalPnlSol,
+      stats,
+    };
+  };
+  const cur = run("current", "Current strategy", current);
+  const prop = run("proposed", "Proposed change", proposed);
+  // Better = more total PnL without a worse drawdown; ties broken by
+  // expectancy. Trade count is deliberately NOT a criterion.
+  const improves =
+    prop.totalPnlSol > cur.totalPnlSol &&
+    (prop.maxDrawdownSol ?? 0) <= (cur.maxDrawdownSol ?? 0) * 1.2;
+  const verdict = improves
+    ? `Proposed improves replay PnL ${cur.totalPnlSol.toFixed(3)} → ${prop.totalPnlSol.toFixed(3)} SOL ` +
+      `(win rate ${cur.winRate?.toFixed(0) ?? "–"}% → ${prop.winRate?.toFixed(0) ?? "–"}%, ` +
+      `${cur.trades} → ${prop.trades} trades) — safe to apply.`
+    : `Proposed does NOT clearly improve the replay (PnL ${cur.totalPnlSol.toFixed(3)} → ${prop.totalPnlSol.toFixed(3)} SOL, ` +
+      `drawdown ${cur.maxDrawdownSol?.toFixed(3) ?? "–"} → ${prop.maxDrawdownSol?.toFixed(3) ?? "–"}) — not recommended.`;
+  return { current: cur, proposed: prop, improves, verdict };
 }
 
 export function runBacktest(

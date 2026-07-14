@@ -382,6 +382,47 @@ model StrategyReport {
   @@index([at])
 }
 
+// One automatic post-trade review per fully-closed position: the complete
+// context snapshot, the cause attribution (why it won/lost, with confidence),
+// and objective condition tags that power the lessons statistics.
+model TradeReview {
+  id         String   @id @default(cuid())
+  positionId String   @unique
+  at         DateTime @default(now())
+  mint       String   @default("")
+  symbol     String?
+  paper      Boolean  @default(true)
+  win        Boolean
+  pnlSol     Float
+  pnlPct     Float?
+  holdMinutes Float?
+  exitKind   String   @default("unknown")
+  // Full entry/exit/market context (entry signals, excursions, exit reason…)
+  snapshot Json
+  // Ranked cause attribution: [{cause, confidencePct, detail}]
+  causes Json
+  // Objective condition tags (late_entry, low_liquidity, accel_strong, …)
+  // assigned to winners AND losers so each lesson has a win rate.
+  tags String[] @default([])
+
+  @@index([at])
+  @@index([win])
+}
+
+// Every parameter change (manual save, auto-rebalance, applied
+// recommendation) with the previous values, so any change can be reverted.
+model ParameterChange {
+  id          String   @id @default(cuid())
+  at          DateTime @default(now())
+  source      String // manual | auto-rebalance | recommendation | revert
+  changedKeys String[] @default([])
+  before      Json
+  after       Json
+  note        String?
+
+  @@index([at])
+}
+
 model DailyStats {
   id          String   @id @default(cuid())
   date        DateTime @unique @db.Date

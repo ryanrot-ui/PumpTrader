@@ -27,6 +27,7 @@ function trade(overrides: Partial<ClosedTrade> & { pnlSol: number }, i = 0): Clo
     maxUnrealizedPnlPct: null,
     maxDrawdownPct: null,
     entryMetrics: null,
+    entryContext: null,
     paper: true,
     ...overrides,
   };

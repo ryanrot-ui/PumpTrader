@@ -123,6 +123,18 @@ export async function generateStrategyReport(opts: {
           where: { id: settings.id },
           data: { scoringWeights: recommendation.recommended as unknown as Prisma.InputJsonValue },
         });
+        // Revertible history for the automatic change too.
+        await prisma.parameterChange
+          .create({
+            data: {
+              source: "auto-rebalance",
+              changedKeys: ["scoringWeights"],
+              before: JSON.parse(JSON.stringify({ scoringWeights: settings.scoringWeights ?? null })),
+              after: JSON.parse(JSON.stringify({ scoringWeights: recommendation.recommended })),
+              note: recommendation.summary,
+            },
+          })
+          .catch(() => {});
         publish(CHANNELS.settingsUpdated, "updated");
         weightsApplied = true;
         logger.info(

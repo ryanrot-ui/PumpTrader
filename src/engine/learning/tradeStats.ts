@@ -29,6 +29,18 @@ export interface ClosedTrade {
   maxDrawdownPct: number | null; // worst excursion seen while open
   /** per-metric 0..1 quality values at entry (scoring breakdown), if recorded */
   entryMetrics: Record<string, number> | null;
+  /** raw market context at entry (from entrySignals.context), if recorded */
+  entryContext: {
+    buySellRatio?: number | null;
+    momentum?: number | null;
+    momentumAcceleration?: number | null;
+    priceChange5mPct?: number | null;
+    priceChange1hPct?: number | null;
+    volume5mUsd?: number | null;
+    holderCount?: number | null;
+    volatility5m?: number | null;
+    estSlippagePctFor1Sol?: number | null;
+  } | null;
   paper: boolean;
 }
 

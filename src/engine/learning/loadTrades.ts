@@ -20,6 +20,15 @@ interface EntrySignals {
     liquiditySol?: number | null;
     tokenAgeMin?: number | null;
     detectionToBuyMs?: number | null;
+    buySellRatio?: number | null;
+    momentum?: number | null;
+    momentumAcceleration?: number | null;
+    priceChange5mPct?: number | null;
+    priceChange1hPct?: number | null;
+    volume5mUsd?: number | null;
+    holderCount?: number | null;
+    volatility5m?: number | null;
+    estSlippagePctFor1Sol?: number | null;
   };
 }
 
@@ -117,6 +126,19 @@ export async function loadClosedTrades(opts: {
         maxUnrealizedPnlPct: p.maxUnrealizedPnlPct,
         maxDrawdownPct: p.maxDrawdownPct,
         entryMetrics,
+        entryContext: sig.context
+          ? {
+              buySellRatio: sig.context.buySellRatio ?? null,
+              momentum: sig.context.momentum ?? null,
+              momentumAcceleration: sig.context.momentumAcceleration ?? null,
+              priceChange5mPct: sig.context.priceChange5mPct ?? null,
+              priceChange1hPct: sig.context.priceChange1hPct ?? null,
+              volume5mUsd: sig.context.volume5mUsd ?? null,
+              holderCount: sig.context.holderCount ?? null,
+              volatility5m: sig.context.volatility5m ?? null,
+              estSlippagePctFor1Sol: sig.context.estSlippagePctFor1Sol ?? null,
+            }
+          : null,
         paper: p.paper,
       } satisfies ClosedTrade;
     });

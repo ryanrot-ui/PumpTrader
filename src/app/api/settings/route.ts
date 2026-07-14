@@ -59,6 +59,27 @@ async function handlePut(req: Request) {
         },
       })
       .catch(() => {});
+    // Revertible history: every manual change keeps its previous values
+    // (safe-learning rule: parameter sets can always be rolled back).
+    if (before && changed[0] !== "(initial)") {
+      const beforeVals = Object.fromEntries(
+        changed.map((k) => [k, (before as Record<string, unknown>)[k] ?? null])
+      );
+      const afterVals = Object.fromEntries(
+        changed.map((k) => [k, (parsed.data as Record<string, unknown>)[k] ?? null])
+      );
+      await prisma.parameterChange
+        .create({
+          data: {
+            source: "manual",
+            changedKeys: changed,
+            before: JSON.parse(JSON.stringify(beforeVals)),
+            after: JSON.parse(JSON.stringify(afterVals)),
+            note: `saved via settings by ${user.email}`,
+          },
+        })
+        .catch(() => {});
+    }
   }
 
   // Tell the engine to hot-reload — no restart needed. (The engine also

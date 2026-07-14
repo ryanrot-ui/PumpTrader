@@ -19,6 +19,7 @@ import type { ScoreResult, TokenMetrics } from "./analysis/types";
 import { MigrationScanner, type MigrationEvent } from "./scanner/migrationScanner";
 import { RpcHealthTracker } from "./rpc/health";
 import { generateStrategyReport } from "./learning/reporter";
+import { generateTradeReview, type ReviewInput } from "./learning/review";
 import { dbResilience, isTransientDbError } from "./db/resilience";
 import { evaluateBuyRules } from "./trading/rules";
 import { adjustSizeForConditions, checkPairHistory, checkRisk } from "./trading/riskManager";
@@ -780,6 +781,8 @@ class TradingEngine {
         momentumAcceleration: metrics.momentumAcceleration,
         priceChange5mPct: metrics.priceChange5mPct,
         priceChange1hPct: metrics.priceChange1hPct,
+        volatility5m: metrics.volatility5m,
+        estSlippagePctFor1Sol: metrics.estSlippagePctFor1Sol,
         holderCount: metrics.holderCount,
         tokenAgeMin: (Date.now() - t.migratedAt.getTime()) / 60_000,
         detectionToBuyMs: Date.now() - t.detectedAt.getTime(),
@@ -1221,7 +1224,27 @@ class TradingEngine {
         losses: pnlSol <= 0 ? 1 : 0,
       });
       this.lastTradeAt = Date.now();
-      if (soldAll) void this.maybeGenerateStrategyReport();
+      if (soldAll) {
+        // Post-trade review: every completed trade teaches something —
+        // cause attribution + lesson tags, persisted for the Learning page.
+        void generateTradeReview({
+          positionId: p.id,
+          mint: p.mint,
+          symbol: p.symbol,
+          paper: p.paper,
+          pnlSol: totalPnlSol,
+          pnlPct,
+          holdMinutes: (Date.now() - p.openedAt.getTime()) / 60_000,
+          exitReason: reason,
+          exitKind: kind,
+          maxUnrealizedPnlPct: p.maxUnrealizedPnlPct,
+          maxDrawdownPct: p.maxDrawdownPct,
+          takeProfitPct: settings.takeProfitPct,
+          stopLossPct: settings.stopLossPct,
+          entrySignals: (p.entrySignals ?? null) as ReviewInput["entrySignals"],
+        });
+        void this.maybeGenerateStrategyReport();
+      }
 
       logger.info("executor", `SELL ${p.mint.slice(0, 8)}… ${kind} pnl ${pnlSol.toFixed(4)} SOL (${latencyMs}ms)`, {
         reason,
