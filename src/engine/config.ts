@@ -47,7 +47,7 @@ export const DEFAULT_SETTINGS: BotSettings = settingsSchema.parse({
   cutWeakAfterMinutes: 4,
   breakevenAfterPct: 6,
   autoRebalanceWeights: false,
-  reportEveryTrades: 500,
+  reportEveryTrades: 250,
   maxSolPerTrade: 0.25,
   maxOpenPositions: 3,
   maxDailyLossSol: 1,

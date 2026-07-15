@@ -5,7 +5,11 @@ import { logger } from "../logging/logger";
 import { computeTradeStats, type BucketStat, type TradeStats } from "./tradeStats";
 import { optimizeWeights, type WeightRecommendation } from "./optimizer";
 import { assessFrequencyHealth, investigateBlockers } from "./frequency";
+import { computeFilterEffectiveness } from "./missed";
 import { loadClosedTrades } from "./loadTrades";
+import { compareSettings, loadTokenSeries, runBacktest, type BacktestResult } from "../backtest/replay";
+import { DEFAULT_SETTINGS } from "../config";
+import { settingsSchema, type BotSettings } from "@/lib/validation";
 
 /**
  * Strategy reports: every `reportEveryTrades` closed trades (and on demand)
@@ -93,6 +97,16 @@ export function deriveAdjustments(stats: TradeStats): string[] {
       );
     }
   }
+  // Calibration sanity: a "high" score bucket that loses is a miscalibrated
+  // scoring engine — say it explicitly instead of hiding it in a table.
+  for (const b of stats.byScore) {
+    if ((b.label === "85-91" || b.label === "92-100" || b.label === "90-100") && b.trades >= 15 && (b.winRate ?? 100) < 50) {
+      out.push(
+        `CALIBRATION WARNING: score ${b.label} wins only ${b.winRate!.toFixed(0)}% over ${b.trades} trades — high scores are not protective. Review the weight recommendation before trusting the threshold.`
+      );
+    }
+  }
+
   const hours = stats.byHourUtc.filter((b) => b.trades >= 3);
   if (hours.length >= 4) {
     const bh = hours.reduce((a, b) => (b.pnlSol > a.pnlSol ? b : a));
@@ -129,6 +143,74 @@ export async function generateStrategyReport(opts: {
     );
   } else if (freq.status === "healthy") {
     adjustments.push(`Frequency healthy: ${freq.detail}`);
+  }
+
+  // ── "What would have made more money?" — replay-tested counterfactuals ───
+  // Exit variants and the live-vs-preset comparison are run on the recorded
+  // history through the production exit engine. Only variants that IMPROVE
+  // the replay are recommended; the rest are reported as tested-and-rejected.
+  let presetComparison: BacktestResult[] | null = null;
+  try {
+    const series = await loadTokenSeries({ maxTokens: 300 });
+    if (series.length >= 20) {
+      const settingsRow = await prisma.settings.findFirst({ orderBy: { updatedAt: "desc" } });
+      const current = settingsRow
+        ? { ...DEFAULT_SETTINGS, ...(settingsSchema.partial().safeParse(settingsRow).data ?? {}) }
+        : DEFAULT_SETTINGS;
+      const variants: Array<{ name: string; values: Partial<BotSettings> }> = [
+        { name: `take profit ${current.takeProfitPct}% → ${Math.round(current.takeProfitPct * 0.75)}% (exit sooner)`, values: { takeProfitPct: Math.round(current.takeProfitPct * 0.75) } },
+        { name: `take profit ${current.takeProfitPct}% → ${Math.round(current.takeProfitPct * 1.25)}% (hold longer)`, values: { takeProfitPct: Math.round(current.takeProfitPct * 1.25) } },
+        ...(current.trailingStopPct
+          ? [{ name: `trailing stop ${current.trailingStopPct}% → ${(current.trailingStopPct * 0.75).toFixed(1)}% (tighter)`, values: { trailingStopPct: current.trailingStopPct * 0.75 } }]
+          : []),
+        ...(current.maxHoldMinutes
+          ? [{ name: `max hold ${current.maxHoldMinutes} → ${Math.max(2, Math.round(current.maxHoldMinutes * 0.6))} min (cut sooner)`, values: { maxHoldMinutes: Math.max(2, Math.round(current.maxHoldMinutes * 0.6)) } }]
+          : []),
+      ];
+      const tested: string[] = [];
+      for (const v of variants) {
+        const cmp = compareSettings(series, current, { ...current, ...v.values });
+        if (cmp.improves) {
+          adjustments.push(
+            `EXIT COUNTERFACTUAL (replay-proven): ${v.name} — PnL ${cmp.current.totalPnlSol.toFixed(3)} → ${cmp.proposed.totalPnlSol.toFixed(3)} SOL on ${cmp.current.trades} replayed trades. Apply from the Learning page to keep it revertible.`
+          );
+        } else {
+          tested.push(v.name);
+        }
+      }
+      if (tested.length) {
+        adjustments.push(`Tested and rejected (no replay improvement): ${tested.join("; ")}.`);
+      }
+      presetComparison = runBacktest(series);
+    }
+  } catch {
+    /* counterfactuals are best-effort; the report still ships */
+  }
+
+  // Missed-opportunity feedback: name filters whose grades say they cost
+  // more than they save.
+  try {
+    const missedRows = await prisma.missedOpportunity.findMany({
+      where: { doneAt: { not: null } },
+      select: { hardFailRules: true, maxGainPct: true, rugged: true },
+      take: 2000,
+    });
+    for (const f of computeFilterEffectiveness(missedRows)) {
+      if (f.rejected >= 30 && f.accuracyPct < 50) {
+        adjustments.push(
+          `FILTER TOO STRICT: "${f.rule}" — only ${f.accuracyPct.toFixed(0)}% accurate over ${f.rejected} rejections (${f.missedWinners} missed winners worth ~${f.missedPnlPct.toFixed(0)}% peak gain). Consider loosening it.`
+        );
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+
+  // Continuous-improvement contract: never a bare "no recommendations".
+  if (!recommendation && adjustments.length <= 1) {
+    adjustments.push(
+      `No statistically significant improvement found across the tested candidates on ${stats.trades} trades — the current strategy stands until stronger evidence accumulates.`
+    );
   }
 
   let weightsApplied = false;
@@ -169,7 +251,22 @@ export async function generateStrategyReport(opts: {
       mode,
       trigger: opts.trigger,
       tradesAnalyzed: stats.trades,
-      stats: JSON.parse(JSON.stringify({ ...stats, adjustments })),
+      stats: JSON.parse(
+        JSON.stringify({
+          ...stats,
+          adjustments,
+          // live-vs-preset shadow comparison snapshot at report time
+          presetComparison: presetComparison?.map((p) => ({
+            preset: p.preset,
+            trades: p.trades,
+            winRate: p.winRate,
+            profitFactor: p.profitFactor,
+            expectancyPct: p.expectancyPct,
+            maxDrawdownSol: p.maxDrawdownSol,
+            totalPnlSol: p.totalPnlSol,
+          })) ?? null,
+        })
+      ),
       recommendations: recommendation ? JSON.parse(JSON.stringify(recommendation)) : Prisma.DbNull,
       weightsApplied,
     },

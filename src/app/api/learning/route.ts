@@ -5,7 +5,10 @@ import { publish, CHANNELS } from "@/lib/redis";
 import { requireUser, unauthorized } from "@/lib/session";
 import { dbGuard } from "@/lib/dbGuard";
 import { loadClosedTrades } from "@/engine/learning/loadTrades";
-import { detectPatterns, MIN_RELEVANT_TRADES } from "@/engine/learning/patterns";
+import { computeEdgeScore, detectPatterns, MIN_RELEVANT_TRADES } from "@/engine/learning/patterns";
+import { computeTradeStats } from "@/engine/learning/tradeStats";
+import { computeFilterEffectiveness } from "@/engine/learning/missed";
+import { assessFrequencyHealth, investigateBlockers } from "@/engine/learning/frequency";
 import { validateFeatures, buildCalibration } from "@/engine/learning/featureValidation";
 import { compareShadowStrategy } from "@/engine/learning/shadow";
 import { getEngineState, type EngineHealth } from "@/lib/engineState";
@@ -109,6 +112,38 @@ async function handleGet(req: Request) {
       })()
     : DEFAULT_SETTINGS;
   const patterns = detectPatterns(trades, currentSettings);
+  const stats = computeTradeStats(trades);
+  const frequency = assessFrequencyHealth(trades);
+  const [missedRows, topBlockers] = await Promise.all([
+    prisma.missedOpportunity.findMany({
+      where: { doneAt: { not: null } },
+      select: { hardFailRules: true, maxGainPct: true, rugged: true },
+      take: 2000,
+    }),
+    investigateBlockers().catch(() => []),
+  ]);
+  const filterEff = computeFilterEffectiveness(missedRows);
+  const avgFilterAccuracyPct = filterEff.length
+    ? filterEff.reduce((a, f) => a + f.accuracyPct * f.rejected, 0) /
+      filterEff.reduce((a, f) => a + f.rejected, 0)
+    : null;
+  const edgeScore = computeEdgeScore({
+    stats,
+    avgFilterAccuracyPct,
+    frequencyStatus: frequency.status,
+  });
+
+  // Performance before/after each parameter change (up to 100 trades each
+  // side), so every approved change is graded on what it actually did.
+  const ordered = [...trades].sort((a, b) => a.closedAt.getTime() - b.closedAt.getTime());
+  const perfWindow = (predicate: (t: (typeof ordered)[number]) => boolean, fromEnd: boolean) => {
+    const set = ordered.filter(predicate);
+    const slice = fromEnd ? set.slice(-100) : set.slice(0, 100);
+    if (slice.length < 10) return null;
+    const s = computeTradeStats(slice);
+    return { trades: s.trades, profitFactor: s.profitFactor, expectancySol: s.expectancySol, winRate: s.winRate };
+  };
+
   const featureValidation = validateFeatures(trades);
   const calibration = buildCalibration(trades);
   const shadow = await compareShadowStrategy(currentSettings.confidenceThreshold).catch(() => null);
@@ -154,8 +189,15 @@ async function handleGet(req: Request) {
       detail: health.marketRegimeDetail ?? null,
       shadowStrategyActive: health.shadowStrategyActive ?? false,
     },
-    parameterChanges: changes,
+    parameterChanges: changes.map((c) => ({
+      ...c,
+      performanceBefore: perfWindow((t) => t.closedAt < c.at, true),
+      performanceAfter: perfWindow((t) => t.closedAt >= c.at, false),
+    })),
     winRateSeries,
+    edgeScore,
+    frequency,
+    topBlockers,
   });
 }
 

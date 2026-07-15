@@ -104,7 +104,7 @@ model Settings {
   // Learning analytics: auto-apply the optimizer's recommended scoring
   // weights each time a strategy report is generated.
   autoRebalanceWeights Boolean @default(false)
-  reportEveryTrades    Int     @default(500) // auto strategy report cadence (closed trades)
+  reportEveryTrades    Int     @default(250) // auto strategy report cadence (closed trades)
 
   // Risk
   maxSolPerTrade    Float @default(0.25)
