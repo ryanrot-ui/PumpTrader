@@ -58,6 +58,66 @@ export interface PatternReport {
   strategyConfidenceDetail: string;
 }
 
+// ── Edge Score: one number for overall strategy quality ─────────────────────
+
+export interface EdgeScore {
+  score: number; // 0–100
+  strengths: string[];
+  weaknesses: string[];
+  topImprovement: string;
+}
+
+/**
+ * Composite strategy quality from MEASURED components: expectancy, profit
+ * factor, exit efficiency (giveback), entry timing, filter accuracy, and
+ * consistency. Each weakness names the evidence; the top improvement is the
+ * weakest component — the highest-impact thing to fix next.
+ */
+export function computeEdgeScore(input: {
+  stats: {
+    trades: number;
+    expectancySol: number | null;
+    profitFactor: number | null;
+    avgGivebackPct: number | null;
+    roundTrips: number;
+    avgEntryDelayMs: number | null;
+    maxConsecutiveLosses: number;
+    byScore: Array<{ label: string; trades: number; winRate: number | null; pnlSol: number }>;
+  };
+  avgFilterAccuracyPct: number | null; // from missed-opportunity grading
+  frequencyStatus: string | null;
+}): EdgeScore {
+  const s = input.stats;
+  const parts: Array<{ name: string; got: number; max: number; strong: string; weak: string }> = [];
+  const add = (name: string, got: number, max: number, strong: string, weak: string) =>
+    parts.push({ name, got: Math.max(0, Math.min(max, got)), max, strong, weak });
+
+  add("expectancy", s.expectancySol != null && s.expectancySol > 0 ? 25 : s.expectancySol != null ? 25 + s.expectancySol * 500 : 10, 25,
+    "positive expectancy per trade", `negative expectancy (${s.expectancySol?.toFixed(4) ?? "unrated"} SOL/trade)`);
+  add("profit factor", s.profitFactor != null ? (s.profitFactor - 0.8) * 25 : 8, 20,
+    `profit factor ${s.profitFactor?.toFixed(2)}`, `profit factor ${s.profitFactor?.toFixed(2) ?? "unrated"} — losses too large vs wins`);
+  add("exits", s.avgGivebackPct != null ? 15 - s.avgGivebackPct : 8, 15,
+    "exits keep most of the peak gain", `weak exits: winners give back ${s.avgGivebackPct?.toFixed(1)}% on average, ${s.roundTrips} round trips`);
+  add("entry timing", s.avgEntryDelayMs != null ? 10 - (s.avgEntryDelayMs / 1000 - 20) / 10 : 5, 10,
+    "fast detection→fill pipeline", `late entries: ${((s.avgEntryDelayMs ?? 0) / 1000).toFixed(0)}s average detection→fill`);
+  add("filters", input.avgFilterAccuracyPct != null ? (input.avgFilterAccuracyPct - 40) / 4 : 7, 15,
+    `filters ${input.avgFilterAccuracyPct?.toFixed(0)}% accurate (rugs avoided vs winners missed)`, `filters only ${input.avgFilterAccuracyPct?.toFixed(0)}% accurate — costing winners`);
+  add("consistency", 15 - s.maxConsecutiveLosses, 15,
+    "no destructive losing streaks", `losing streaks reach ${s.maxConsecutiveLosses} in a row`);
+
+  const score = Math.round(parts.reduce((a, p) => a + p.got, 0));
+  const strengths = parts.filter((p) => p.got >= p.max * 0.7).map((p) => p.strong);
+  const weak = parts.filter((p) => p.got < p.max * 0.5).sort((a, b) => a.got / a.max - b.got / b.max);
+  const weaknesses = weak.map((p) => p.weak);
+  if (input.frequencyStatus === "over_selective") weaknesses.push("over-selective: frequency and daily profit both fell");
+  return {
+    score: Math.max(0, Math.min(100, score)),
+    strengths: strengths.length ? strengths : ["none rated strong yet — needs more closed trades"],
+    weaknesses: weaknesses.length ? weaknesses : ["no major weakness detected in this window"],
+    topImprovement: weak[0]?.weak ?? "keep collecting data — no weak component stands out",
+  };
+}
+
 /** Standard normal CDF (Abramowitz–Stegun approximation). */
 function phi(z: number): number {
   const t = 1 / (1 + 0.2316419 * Math.abs(z));

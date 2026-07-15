@@ -57,12 +57,21 @@ interface Recommendation {
   summary: string;
 }
 
+interface PerfWindow {
+  trades: number;
+  profitFactor: number | null;
+  expectancySol: number | null;
+  winRate: number | null;
+}
+
 interface ParameterChangeRow {
   id: string;
   at: string;
   source: string;
   changedKeys: string[];
   note: string | null;
+  performanceBefore: PerfWindow | null;
+  performanceAfter: PerfWindow | null;
 }
 
 interface FeatureStat {
@@ -116,6 +125,9 @@ interface LearningData {
   };
   parameterChanges: ParameterChangeRow[];
   winRateSeries: Array<{ trade: number; winRate: number; at: string }>;
+  edgeScore: { score: number; strengths: string[]; weaknesses: string[]; topImprovement: string };
+  frequency: { status: string; detail: string };
+  topBlockers: Array<{ rule: string; count: number }>;
 }
 
 type StatsMode = "all" | "paper" | "live";
@@ -186,6 +198,39 @@ export default function LearningPage() {
 
       {data && p && (
         <>
+          {/* Edge score — the brain's one-number self-assessment */}
+          <div className="card mb-4">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div>
+                <div className="stat-label mb-1">Edge Score</div>
+                <div className={`text-4xl font-semibold ${data.edgeScore.score >= 60 ? "text-profit" : data.edgeScore.score >= 40 ? "text-warn" : "text-loss"}`}>
+                  {data.edgeScore.score}<span className="text-lg text-slate-500">/100</span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1 max-w-xs">
+                  Highest-impact improvement: <span className="text-slate-300">{data.edgeScore.topImprovement}</span>
+                </p>
+              </div>
+              <div className="text-xs space-y-0.5 min-w-0">
+                <div className="text-[10px] text-slate-500 mb-0.5">Strengths</div>
+                {data.edgeScore.strengths.map((x, i) => (
+                  <p key={i} className="text-profit">+ {x}</p>
+                ))}
+              </div>
+              <div className="text-xs space-y-0.5 min-w-0">
+                <div className="text-[10px] text-slate-500 mb-0.5">Weaknesses</div>
+                {data.edgeScore.weaknesses.map((x, i) => (
+                  <p key={i} className="text-loss">− {x}</p>
+                ))}
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-500 mt-2">
+              Frequency: <span className={data.frequency.status === "healthy" ? "text-profit" : "text-warn"}>{data.frequency.status.replace(/_/g, " ")}</span> — {data.frequency.detail}
+              {data.topBlockers.length > 0 && (
+                <> · top blocking gates (7d): {data.topBlockers.slice(0, 3).map((b) => `${b.rule} (${b.count}×)`).join(", ")}</>
+              )}
+            </p>
+          </div>
+
           {/* Strategy confidence + win rate over time */}
           <div className="grid lg:grid-cols-3 gap-4 mb-4">
             <div className="card">
@@ -367,9 +412,11 @@ export default function LearningPage() {
             {message && <p className="text-xs mb-2 text-slate-300">{message}</p>}
             {p.recommendations.length === 0 ? (
               <p className="text-sm text-slate-600">
-                None right now. Recommendations appear when ≥{data.minRelevantTrades} relevant trades
-                show a statistically significant edge (≥95%) for a tighter parameter — random noise
-                and hot streaks don&apos;t qualify.
+                No statistically significant improvement found across the tested candidates on{" "}
+                {p.tradesAnalyzed} trades. Every candidate needs ≥{data.minRelevantTrades} relevant
+                trades, ≥95% significance, and negative PnL in the filtered trades — random noise and
+                hot streaks don&apos;t qualify. The current strategy stands until stronger evidence
+                accumulates.
               </p>
             ) : (
               <div className="space-y-3">
@@ -489,6 +536,15 @@ export default function LearningPage() {
                       {c.note && (
                         <p className="text-[10px] text-slate-600 truncate" title={c.note}>
                           {c.note}
+                        </p>
+                      )}
+                      {(c.performanceBefore || c.performanceAfter) && (
+                        <p className="text-[10px] text-slate-500">
+                          before: PF {c.performanceBefore?.profitFactor?.toFixed(2) ?? "—"} · WR{" "}
+                          {c.performanceBefore?.winRate?.toFixed(0) ?? "—"}% → after: PF{" "}
+                          {c.performanceAfter?.profitFactor?.toFixed(2) ?? "—"} · WR{" "}
+                          {c.performanceAfter?.winRate?.toFixed(0) ?? "—"}%
+                          {c.performanceAfter == null && " (accumulating)"}
                         </p>
                       )}
                     </div>

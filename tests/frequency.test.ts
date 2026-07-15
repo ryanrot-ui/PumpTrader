@@ -111,3 +111,47 @@ describe("filter effectiveness (Phase 2)", () => {
     expect(eff[0].accuracyPct).toBe(100);
   });
 });
+
+// ── Edge Score ───────────────────────────────────────────────────────────────
+import { computeEdgeScore } from "@/engine/learning/patterns";
+
+describe("edge score", () => {
+  const baseStats = (over: Record<string, unknown> = {}) => ({
+    trades: 120,
+    expectancySol: 0.004,
+    profitFactor: 1.6,
+    avgGivebackPct: 4,
+    roundTrips: 2,
+    avgEntryDelayMs: 15_000,
+    maxConsecutiveLosses: 4,
+    byScore: [],
+    ...over,
+  });
+
+  it("scores a strong strategy high with named strengths", () => {
+    const e = computeEdgeScore({ stats: baseStats(), avgFilterAccuracyPct: 85, frequencyStatus: "healthy" });
+    expect(e.score).toBeGreaterThanOrEqual(70);
+    expect(e.strengths.join(" ")).toMatch(/expectancy|profit factor/);
+  });
+
+  it("names weak exits and late entries as the top improvement when they dominate", () => {
+    const e = computeEdgeScore({
+      stats: baseStats({ avgGivebackPct: 14, roundTrips: 12, avgEntryDelayMs: 90_000, profitFactor: 1.5 }),
+      avgFilterAccuracyPct: 85,
+      frequencyStatus: "healthy",
+    });
+    expect(e.score).toBeLessThan(85);
+    expect(e.weaknesses.join(" ")).toMatch(/give back|late entries/);
+  });
+
+  it("stays within 0-100 and flags over-selectivity", () => {
+    const e = computeEdgeScore({
+      stats: baseStats({ expectancySol: -0.01, profitFactor: 0.6, avgGivebackPct: 20, maxConsecutiveLosses: 12 }),
+      avgFilterAccuracyPct: 45,
+      frequencyStatus: "over_selective",
+    });
+    expect(e.score).toBeGreaterThanOrEqual(0);
+    expect(e.score).toBeLessThan(40);
+    expect(e.weaknesses.join(" ")).toMatch(/over-selective/);
+  });
+});
